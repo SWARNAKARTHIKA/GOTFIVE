@@ -1,0 +1,2281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>GOT FIVE! – Digital Board Game</title>
+  <meta name="theme-color" content="#1e1b4b" />
+  <meta name="description" content="Play GOT FIVE! online with friends, against smart AI opponents, or offline pass-and-play." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --font-display: 'Fredoka', sans-serif;
+      --font-body: 'Inter', sans-serif;
+    }
+    html {
+      scroll-behavior: smooth;
+    }
+    body {
+      font-family: var(--font-body);
+      background: radial-gradient(circle at top left, #1e1b4b, #0f172a 60%, #090d16);
+      color: #f8fafc;
+      min-height: 100vh;
+      overflow-x: hidden;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    h1, h2, h3, .font-display {
+      font-family: var(--font-display);
+    }
+
+    /* High-Contrast Tile Number Styling */
+    .tile-num {
+      font-family: var(--font-body);
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      text-shadow: 0 2px 3px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.95);
+    }
+
+    /* Tile Color Palettes */
+    .tile-Red {
+      background: linear-gradient(155deg, #dc2626, #991b1b);
+      border-color: #fca5a5;
+      box-shadow: 0 5px 0 #7f1d1d, 0 8px 16px rgba(0,0,0,0.45);
+    }
+    .tile-Blue {
+      background: linear-gradient(155deg, #2563eb, #1e40af);
+      border-color: #93c5fd;
+      box-shadow: 0 5px 0 #1e3a8a, 0 8px 16px rgba(0,0,0,0.45);
+    }
+    .tile-Green {
+      background: linear-gradient(155deg, #059669, #065f46);
+      border-color: #6ee7b7;
+      box-shadow: 0 5px 0 #064e3b, 0 8px 16px rgba(0,0,0,0.45);
+    }
+    .tile-Yellow {
+      background: linear-gradient(155deg, #d97706, #92400e);
+      border-color: #fde68a;
+      box-shadow: 0 5px 0 #78350f, 0 8px 16px rgba(0,0,0,0.45);
+    }
+    .tile-Purple {
+      background: linear-gradient(155deg, #9333ea, #581c87);
+      border-color: #d8b4fe;
+      box-shadow: 0 5px 0 #4c1d95, 0 8px 16px rgba(0,0,0,0.45);
+    }
+    .tile-Hidden {
+      background: linear-gradient(145deg, #334155, #1e293b);
+      border-color: #64748b;
+      box-shadow: 0 5px 0 #0f172a, 0 8px 16px rgba(0,0,0,0.45);
+    }
+
+    .game-tile {
+      border-width: 2px;
+      border-radius: 14px;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, outline 0.15s ease;
+      position: relative;
+    }
+    .game-tile.clickable:hover {
+      transform: translateY(-4px) scale(1.04);
+      cursor: pointer;
+    }
+    .game-tile.clickable:active {
+      transform: scale(0.97);
+    }
+    .game-tile.selected-tile {
+      outline: 4px solid #fde047;
+      transform: translateY(-6px) scale(1.06);
+      z-index: 10;
+    }
+    .angled-no {
+      transform: rotate(20deg) scale(0.94);
+      border-style: dashed;
+    }
+    .straight-yes {
+      transform: rotate(0deg) scale(0.96);
+      outline: 2px solid #4ade80;
+    }
+
+    /* Mobile-First Responsive Breakpoints */
+    @media (max-width: 768px) {
+      .game-tile {
+        border-radius: 12px;
+      }
+      button, select, input {
+        min-height: 44px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .mobile-compact-pad {
+        padding-left: 0.65rem;
+        padding-right: 0.65rem;
+      }
+      .notebook-cell-btn {
+        min-height: 46px !important;
+      }
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.35);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(148, 163, 184, 0.6);
+    }
+
+    /* Confetti Animation */
+    @keyframes floatSlow {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-6px); }
+    }
+    .animate-float {
+      animation: floatSlow 3s ease-in-out infinite;
+    }
+    @keyframes pulseGlow {
+      0%, 100% { box-shadow: 0 0 15px rgba(250, 204, 21, 0.4); }
+      50% { box-shadow: 0 0 28px rgba(250, 204, 21, 0.85); }
+    }
+    .active-turn-ring {
+      animation: pulseGlow 2s infinite;
+    }
+  </style>
+</head>
+<body class="antialiased selection:bg-amber-400 selection:text-slate-900">
+
+  <!-- TOP STATUS BAR -->
+  <header class="sticky top-0 z-40 bg-slate-950/85 backdrop-blur-md border-b border-slate-800 px-3 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2">
+    <div class="flex items-center gap-2.5 cursor-pointer" id="nav-home-btn" title="Return to Main Menu">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 via-rose-500 to-indigo-600 flex items-center justify-center font-display font-bold text-white text-lg shadow-lg">
+        5!
+      </div>
+      <div>
+        <span class="font-display font-bold text-xl tracking-wide bg-gradient-to-r from-amber-300 via-rose-300 to-indigo-300 bg-clip-text text-transparent">
+          GOT FIVE!
+        </span>
+        <span class="hidden sm:inline-block ml-2 text-xs text-slate-400 font-medium">Digital Edition</span>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 sm:gap-3">
+      <!-- Network & PWA Status Badge -->
+      <div id="network-badge" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+        <span id="network-dot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="network-text">ONLINE</span>
+      </div>
+
+      <!-- Rules Button -->
+      <button id="btn-open-rules" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold border border-slate-700 transition">
+        Rules
+      </button>
+
+      <!-- Exit Game Button (Visible only in active game) -->
+      <button id="btn-exit-game" class="hidden px-3 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-200 text-xs sm:text-sm font-semibold border border-rose-800/70 transition">
+        Menu
+      </button>
+    </div>
+  </header>
+
+  <!-- TOAST / NOTIFICATION BANNER -->
+  <div id="toast-container" class="fixed top-16 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none w-full max-w-md px-4"></div>
+
+  <!-- MAIN CONTAINER -->
+  <main id="app-root" class="max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
+
+    <!-- ==================== 1. MAIN MENU SCREEN ==================== -->
+    <section id="screen-menu" class="flex flex-col items-center justify-center min-h-[78vh] text-center">
+      <!-- Decorative Color Tiles Banner -->
+      <div class="flex items-center justify-center gap-2 sm:gap-3 mb-5 animate-float">
+        <div class="game-tile tile-Red w-11 h-14 sm:w-14 sm:h-18 flex flex-col items-center justify-center font-display font-bold text-xl sm:text-2xl text-white">7<span class="text-[10px] tracking-widest mt-0.5">●</span></div>
+        <div class="game-tile tile-Blue w-11 h-14 sm:w-14 sm:h-18 flex flex-col items-center justify-center font-display font-bold text-xl sm:text-2xl text-white">19<span class="text-[10px] tracking-widest mt-0.5">●●</span></div>
+        <div class="game-tile tile-Green w-11 h-14 sm:w-14 sm:h-18 flex flex-col items-center justify-center font-display font-bold text-xl sm:text-2xl text-white">34<span class="text-[10px] tracking-widest mt-0.5">●●●</span></div>
+        <div class="game-tile tile-Yellow w-11 h-14 sm:w-14 sm:h-18 flex flex-col items-center justify-center font-display font-bold text-xl sm:text-2xl text-white">48<span class="text-[10px] tracking-widest mt-0.5">●●</span></div>
+        <div class="game-tile tile-Purple w-11 h-14 sm:w-14 sm:h-18 flex flex-col items-center justify-center font-display font-bold text-xl sm:text-2xl text-white">56<span class="text-[10px] tracking-widest mt-0.5">●</span></div>
+      </div>
+
+      <h1 class="font-display font-bold text-4xl sm:text-6xl tracking-tight mb-2 bg-gradient-to-r from-amber-300 via-rose-400 to-purple-300 bg-clip-text text-transparent">
+        GOT FIVE!
+      </h1>
+      <p class="text-slate-300 max-w-xl text-sm sm:text-base mb-8 px-2">
+        Deduce your five hidden numbers in ascending order using <span class="text-amber-300 font-semibold">SORT</span> and <span class="text-sky-300 font-semibold">COMPARE</span> clues before your opponents crack theirs!
+      </p>
+
+      <!-- Resume Saved Offline Game Card (Dynamic) -->
+      <div id="resume-banner" class="hidden w-full max-w-md mb-6 p-4 rounded-2xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-400/40 flex items-center justify-between gap-3">
+        <div class="text-left">
+          <div class="text-xs font-bold uppercase tracking-wider text-amber-300">Saved Local Match Found</div>
+          <div id="resume-details" class="text-sm text-slate-200 font-medium">Offline Game in Progress</div>
+        </div>
+        <div class="flex gap-2">
+          <button id="btn-resume-saved" class="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-sm shadow-lg transition">
+            Resume
+          </button>
+          <button id="btn-discard-saved" class="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition" title="Discard saved game">
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <!-- Three Main Mode Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 w-full max-w-4xl">
+        <!-- Play Online -->
+        <button id="mode-online-btn" class="group relative overflow-hidden rounded-3xl bg-slate-900/90 hover:bg-slate-800/95 border-2 border-indigo-500/40 hover:border-indigo-400 p-6 text-left transition-all duration-200 shadow-xl hover:-translate-y-1">
+          <div class="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition">
+            🌐
+          </div>
+          <h2 class="font-display font-bold text-2xl text-white mb-1">PLAY ONLINE</h2>
+          <p class="text-sm text-slate-400 mb-4">Create or join a private room code to play live with 2–4 friends anywhere.</p>
+          <span class="inline-flex items-center text-xs font-bold uppercase tracking-wider text-indigo-300">
+            Create / Join Room →
+          </span>
+        </button>
+
+        <!-- Play with Computer -->
+        <button id="mode-ai-btn" class="group relative overflow-hidden rounded-3xl bg-slate-900/90 hover:bg-slate-800/95 border-2 border-emerald-500/40 hover:border-emerald-400 p-6 text-left transition-all duration-200 shadow-xl hover:-translate-y-1">
+          <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition">
+            🤖
+          </div>
+          <h2 class="font-display font-bold text-2xl text-white mb-1">PLAY WITH COMPUTER</h2>
+          <p class="text-sm text-slate-400 mb-4">Challenge 1 to 3 smart AI detectives across Easy, Medium, or Hard difficulty.</p>
+          <span class="inline-flex items-center text-xs font-bold uppercase tracking-wider text-emerald-300">
+            Solo vs AI →
+          </span>
+        </button>
+
+        <!-- Play Offline Pass & Play -->
+        <button id="mode-offline-btn" class="group relative overflow-hidden rounded-3xl bg-slate-900/90 hover:bg-slate-800/95 border-2 border-amber-500/40 hover:border-amber-400 p-6 text-left transition-all duration-200 shadow-xl hover:-translate-y-1">
+          <div class="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-300 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition">
+            👥
+          </div>
+          <h2 class="font-display font-bold text-2xl text-white mb-1">PLAY OFFLINE</h2>
+          <p class="text-sm text-slate-400 mb-4">Pass-and-play on a single device for 2–4 players with turn privacy screens.</p>
+          <span class="inline-flex items-center text-xs font-bold uppercase tracking-wider text-amber-300">
+            Local Multiplayer →
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================== 2A. ONLINE SETUP SCREEN ==================== -->
+    <section id="screen-setup-online" class="hidden max-w-xl mx-auto bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <button class="back-to-menu text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white mb-4 inline-flex items-center gap-1">
+        ← Back to Menu
+      </button>
+      <h2 class="font-display font-bold text-3xl text-white mb-1">Online Multiplayer</h2>
+      <p class="text-sm text-slate-400 mb-6">Play live with 2–4 players using a private room code.</p>
+
+      <div id="online-offline-warning" class="hidden mb-5 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-sm">
+        ⚠️ You appear to be offline. Serverless online multiplayer requires an active internet connection.
+      </div>
+
+      <div class="mb-5">
+        <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Your Display Name</label>
+        <input id="online-player-name" type="text" maxlength="16" placeholder="Enter your name" class="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-indigo-400" />
+      </div>
+
+      <!-- Create or Join Tabs -->
+      <div id="online-lobby-actions" class="space-y-4">
+        <div class="p-5 rounded-2xl bg-slate-950/70 border border-slate-800">
+          <h3 class="font-display font-semibold text-lg text-indigo-300 mb-1">Host a New Room</h3>
+          <p class="text-xs text-slate-400 mb-4">Generate a private room code and invite up to 3 friends.</p>
+          <button id="btn-create-room" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-lg transition">
+            Create Private Room
+          </button>
+        </div>
+
+        <div class="relative flex py-1 items-center">
+          <div class="flex-grow border-t border-slate-800"></div>
+          <span class="flex-shrink mx-4 text-xs font-bold text-slate-500">OR</span>
+          <div class="flex-grow border-t border-slate-800"></div>
+        </div>
+
+        <div class="p-5 rounded-2xl bg-slate-950/70 border border-slate-800">
+          <h3 class="font-display font-semibold text-lg text-emerald-300 mb-1">Join Existing Room</h3>
+          <p class="text-xs text-slate-400 mb-3">Enter the 5-character code shared by your host.</p>
+          <div class="flex gap-2">
+            <input id="join-room-code-input" type="text" maxlength="6" placeholder="e.g. X7K9P" class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white uppercase tracking-widest font-mono font-bold focus:outline-none focus:border-emerald-400" />
+            <button id="btn-join-room" class="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg transition">
+              Join
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Waiting Room -->
+      <div id="online-waiting-room" class="hidden space-y-5">
+        <div class="p-5 rounded-2xl bg-indigo-950/50 border border-indigo-500/40 text-center">
+          <div class="flex items-center justify-center gap-2 mb-1">
+            <span class="text-xs font-bold uppercase tracking-wider text-indigo-300">Private P2P Room Code</span>
+            <span id="p2p-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">● P2P LIVE</span>
+          </div>
+          <div class="flex items-center justify-center gap-3">
+            <span id="display-room-code" class="font-mono font-bold text-3xl sm:text-4xl tracking-widest text-white">-----</span>
+            <button id="btn-copy-code" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition">
+              Copy
+            </button>
+          </div>
+          <p class="text-xs text-slate-400 mt-2">Share this code with friends to connect peer-to-peer (2–4 players).</p>
+        </div>
+          <p class="text-xs text-slate-400 mt-2">Share this code with friends to join (2–4 players).</p>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Connected Players</span>
+            <span id="lobby-player-count" class="text-xs font-bold text-indigo-300">1 / 4</span>
+          </div>
+          <div id="lobby-players-list" class="space-y-2"></div>
+        </div>
+
+        <div class="flex gap-3 pt-2">
+          <button id="btn-leave-room" class="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm transition">
+            Leave Room
+          </button>
+          <button id="btn-start-online-game" class="hidden flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-base shadow-lg transition disabled:opacity-40">
+            Start Game
+          </button>
+        </div>
+        <p id="waiting-for-host-msg" class="hidden text-center text-xs text-slate-400 animate-pulse">
+          Waiting for the room host to start the match...
+        </p>
+      </div>
+    </section>
+
+    <!-- ==================== 2B. AI SETUP SCREEN ==================== -->
+    <section id="screen-setup-ai" class="hidden max-w-xl mx-auto bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <button class="back-to-menu text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white mb-4 inline-flex items-center gap-1">
+        ← Back to Menu
+      </button>
+      <h2 class="font-display font-bold text-3xl text-white mb-1">Play with Computer</h2>
+      <p class="text-sm text-slate-400 mb-6">AI players use genuine logical deduction without ever peeking at hidden tiles.</p>
+
+      <div class="space-y-5">
+        <div>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Your Name</label>
+          <input id="ai-human-name" type="text" maxlength="16" value="You" class="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-emerald-400" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Number of Computer Opponents</label>
+          <div class="grid grid-cols-3 gap-3" id="ai-count-selector">
+            <button type="button" data-count="1" class="ai-count-btn py-3 rounded-xl border-2 border-emerald-400 bg-emerald-500/20 text-white font-bold">1 Bot (2P)</button>
+            <button type="button" data-count="2" class="ai-count-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">2 Bots (3P)</button>
+            <button type="button" data-count="3" class="ai-count-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">3 Bots (4P)</button>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Bot Intelligence Level</label>
+          <div class="grid grid-cols-3 gap-3" id="ai-diff-selector">
+            <button type="button" data-diff="easy" class="ai-diff-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">Easy</button>
+            <button type="button" data-diff="medium" class="ai-diff-btn py-3 rounded-xl border-2 border-emerald-400 bg-emerald-500/20 text-white font-bold">Medium</button>
+            <button type="button" data-diff="hard" class="ai-diff-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">Hard</button>
+          </div>
+          <p id="ai-diff-desc" class="text-xs text-slate-400 mt-2">
+            Medium: Tracks visible tiles, SORT bounds, and COMPARE dot counts methodically.
+          </p>
+        </div>
+
+        <button id="btn-start-ai-game" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-lg shadow-lg transition">
+          Start Match vs AI
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================== 2C. OFFLINE PASS-AND-PLAY SETUP ==================== -->
+    <section id="screen-setup-offline" class="hidden max-w-xl mx-auto bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <button class="back-to-menu text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white mb-4 inline-flex items-center gap-1">
+        ← Back to Menu
+      </button>
+      <h2 class="font-display font-bold text-3xl text-white mb-1">Offline Pass & Play</h2>
+      <p class="text-sm text-slate-400 mb-6">Play locally with 2–4 players on one device. Privacy screens protect each player's secret tiles and notebook.</p>
+
+      <div class="space-y-5">
+        <div>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Number of Players</label>
+          <div class="grid grid-cols-3 gap-3" id="offline-count-selector">
+            <button type="button" data-count="2" class="offline-count-btn py-3 rounded-xl border-2 border-amber-400 bg-amber-500/20 text-white font-bold">2 Players</button>
+            <button type="button" data-count="3" class="offline-count-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">3 Players</button>
+            <button type="button" data-count="4" class="offline-count-btn py-3 rounded-xl border-2 border-slate-700 bg-slate-950 text-slate-300 font-bold">4 Players</button>
+          </div>
+        </div>
+
+        <div id="offline-player-names" class="space-y-3"></div>
+
+        <button id="btn-start-offline-game" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 font-bold text-lg shadow-lg transition">
+          Start Pass & Play
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================== 3. ACTIVE GAME BOARD SCREEN ==================== -->
+    <section id="screen-game" class="hidden space-y-3 sm:space-y-4 pb-16 lg:pb-4">
+
+      <!-- TOP TURN & ACTION STATUS BANNER -->
+      <div class="rounded-2xl bg-slate-900/95 border border-slate-800 p-3 sm:p-4 flex flex-wrap items-center justify-between gap-2.5 shadow-lg">
+        <div class="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+          <div id="turn-avatar" class="w-10 h-10 sm:w-11 sm:h-11 shrink-0 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center font-display font-bold text-amber-300 text-base sm:text-lg">
+            P1
+          </div>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              <span id="turn-player-name" class="font-display font-bold text-base sm:text-xl text-white truncate">Player 1's Turn</span>
+              <span id="room-badge-ingame" class="hidden px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-mono text-xs">ROOM</span>
+            </div>
+            <p id="turn-instruction" class="text-xs sm:text-sm text-amber-300 font-semibold leading-snug">
+              Step 1: Draw 1 tile from the face-down draw pile.
+            </p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
+          <button id="btn-open-guess-modal" class="w-full sm:w-auto min-h-[44px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 hover:brightness-110 text-slate-950 font-display font-bold text-sm sm:text-base shadow-lg transition transform active:scale-95">
+            🏆 GOT FIVE!
+          </button>
+        </div>
+      </div>
+
+      <!-- MOBILE QUICK-JUMP NAVIGATION BAR (Visible on screens < 1024px) -->
+      <div class="lg:hidden sticky top-[57px] z-30 bg-slate-950/90 backdrop-blur-md border border-slate-800 rounded-xl p-1.5 grid grid-cols-3 gap-1.5 shadow-lg">
+        <a href="#section-board-top" class="min-h-[38px] flex items-center justify-center rounded-lg bg-slate-800/90 active:bg-indigo-600 text-xs font-bold text-slate-100">
+          🎴 Pool & Clues
+        </a>
+        <a href="#section-my-rack" class="min-h-[38px] flex items-center justify-center rounded-lg bg-slate-800/90 active:bg-amber-500 text-xs font-bold text-amber-300">
+          🔒 My Rack
+        </a>
+        <a href="#section-notebook" class="min-h-[38px] flex items-center justify-center rounded-lg bg-slate-800/90 active:bg-emerald-600 text-xs font-bold text-emerald-300">
+          📓 Notebook
+        </a>
+      </div>
+
+      <!-- MAIN GAMEPLAY GRID: LEFT/CENTER BOARD + RIGHT NOTEBOOK -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+
+        <!-- LEFT COLUMN (7 cols on lg): Opponents + Common Clue Pool + Active Player Rack -->
+        <div id="section-board-top" class="lg:col-span-7 space-y-4 scroll-mt-28">
+
+          <!-- OPPONENTS' RACKS (Visible numbers!) -->
+          <div class="rounded-2xl bg-slate-900/85 border border-slate-800 p-3 sm:p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-display font-semibold text-xs sm:text-sm uppercase tracking-wider text-slate-300">Opponents' Racks (Visible)</h3>
+              <span class="text-xs font-semibold text-slate-400">− Low → High +</span>
+            </div>
+            <div id="opponents-container" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+          </div>
+
+          <!-- CENTER TABLE: DRAW PILE + FACE-UP CLUE POOL + CLUE ACTION BUILDER -->
+          <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-3.5 sm:p-4 shadow-xl space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <!-- Draw Pile Button -->
+              <div class="flex items-center gap-3">
+                <button id="btn-draw-tile" class="group relative w-20 h-24 sm:w-22 sm:h-26 shrink-0 rounded-2xl bg-gradient-to-br from-indigo-600 to-slate-900 border-2 border-indigo-400/80 shadow-lg flex flex-col items-center justify-center transition hover:scale-105 active:scale-95 disabled:opacity-45 disabled:hover:scale-100">
+                  <span class="text-2xl mb-0.5">🎴</span>
+                  <span class="font-display font-bold text-xs sm:text-sm text-white">DRAW</span>
+                  <span id="draw-pile-count" class="text-xs font-extrabold text-indigo-200 mt-0.5">45 left</span>
+                </button>
+                <div>
+                  <h3 class="font-display font-bold text-base sm:text-lg text-white">Available Clue Pool</h3>
+                  <p class="text-xs sm:text-sm text-slate-300 max-w-xs leading-snug">
+                    Draw 1 tile, then tap <strong>one</strong> face-up tile below to request a <strong>SORT</strong> or <strong>COMPARE</strong> clue.
+                  </p>
+                </div>
+              </div>
+
+              <!-- Last Drawn Tile Highlight -->
+              <div id="last-drawn-badge" class="hidden px-3 py-2 rounded-xl bg-slate-950 border border-amber-400/50 text-xs sm:text-sm">
+                <span class="text-slate-400">Just drawn:</span>
+                <span id="last-drawn-text" class="font-extrabold text-amber-300 ml-1">#14 Blue (2●)</span>
+              </div>
+            </div>
+
+            <!-- Clickable Face-Up Clue Cards -->
+            <div id="faceup-pool-container" class="grid grid-cols-4 sm:flex sm:flex-wrap items-center gap-2 sm:gap-3 min-h-[88px] p-2.5 sm:p-3 rounded-2xl bg-slate-950/75 border border-slate-800/90"></div>
+
+            <!-- CLUE ACTION CONTROLS (Appears when it's player's turn & tile is drawn) -->
+            <div id="clue-action-panel" class="hidden p-3.5 rounded-2xl bg-indigo-950/50 border border-indigo-500/40 space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="text-xs sm:text-sm font-bold uppercase tracking-wider text-indigo-200">
+                  Selected: <span id="selected-clue-label" class="text-amber-300">None (Tap a tile above)</span>
+                </span>
+                <div id="target-opponent-selector" class="flex items-center gap-2 text-xs sm:text-sm">
+                  <span class="text-slate-300 font-semibold">Ask:</span>
+                  <select id="select-target-opponent" class="min-h-[40px] bg-slate-900 border border-slate-600 rounded-xl px-3 py-1.5 text-white font-bold focus:outline-none focus:border-amber-400"></select>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <!-- SORT Button -->
+                <button id="btn-action-sort" disabled class="min-h-[52px] p-3 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 font-bold text-left transition flex items-center justify-between shadow-md">
+                  <div>
+                    <div class="font-display text-base">↕️ SORT CLUE</div>
+                    <div class="text-xs font-semibold opacity-90">Place tile in ascending position</div>
+                  </div>
+                  <span class="text-xl font-bold">→</span>
+                </button>
+
+                <!-- COMPARE Button -->
+                <button id="btn-action-compare" disabled class="min-h-[52px] p-3 rounded-xl bg-sky-400 hover:bg-sky-300 disabled:opacity-40 text-slate-950 font-bold text-left transition flex items-center justify-between shadow-md">
+                  <div>
+                    <div class="font-display text-base">⚖️ COMPARE DOTS</div>
+                    <div class="text-xs font-semibold opacity-90">Match dots with 1 of your 5 slots</div>
+                  </div>
+                  <span class="text-xl font-bold">→</span>
+                </button>
+              </div>
+
+              <!-- Slot Picker for COMPARE -->
+              <div id="compare-slot-picker" class="hidden pt-2.5 border-t border-indigo-500/30">
+                <div class="text-xs sm:text-sm font-bold text-sky-300 mb-2">Choose which of your 5 secret slots to compare dot count against:</div>
+                <div class="grid grid-cols-5 gap-1.5 sm:gap-2" id="compare-slot-buttons"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- YOUR SECRET RACK & RECEIVED CLUES TRACK -->
+          <div id="section-my-rack" class="rounded-2xl bg-slate-900/95 border-2 border-amber-400/50 p-3.5 sm:p-4 shadow-xl scroll-mt-28">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <h3 class="font-display font-bold text-lg text-white flex items-center gap-2">
+                  <span id="my-rack-title">Your Secret Rack</span>
+                  <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-200">Numbers Hidden</span>
+                </h3>
+                <p class="text-xs text-slate-300">Arranged in ascending order from <strong class="text-rose-300">− (Lowest)</strong> on left to <strong class="text-emerald-300">+ (Highest)</strong> on right.</p>
+              </div>
+              <div class="flex items-center gap-2 px-3 py-1 rounded-xl bg-slate-950 border border-slate-700 text-xs font-display font-bold">
+                <span class="text-rose-400 text-lg leading-none">−</span>
+                <span class="text-slate-300 tracking-wider">LOW ──▶ HIGH</span>
+                <span class="text-emerald-400 text-lg leading-none">+</span>
+              </div>
+            </div>
+
+            <!-- Visual Track Showing Sorted Clue Tiles Interleaved With Your 5 Secret Slots + Compared Tiles Below -->
+            <div id="my-rack-track" class="overflow-x-auto pb-2 -mx-1 px-1">
+              <div class="flex items-center gap-2 sm:gap-3 min-w-max py-2">
+                <!-- Minus (-) Lowest Direction Indicator -->
+                <div class="flex flex-col items-center justify-center px-2.5 py-4 rounded-2xl bg-rose-500/15 border-2 border-rose-500/50 text-rose-300 shadow-inner self-center" title="Lowest Number Side (-)">
+                  <span class="font-display font-bold text-2xl sm:text-3xl leading-none">−</span>
+                  <span class="text-[10px] font-extrabold uppercase tracking-wider mt-1">LOW</span>
+                </div>
+
+                <div id="my-rack-slots-container" class="flex items-start gap-2 sm:gap-3"></div>
+
+                <!-- Plus (+) Highest Direction Indicator -->
+                <div class="flex flex-col items-center justify-center px-2.5 py-4 rounded-2xl bg-emerald-500/15 border-2 border-emerald-500/50 text-emerald-300 shadow-inner self-center" title="Highest Number Side (+)">
+                  <span class="font-display font-bold text-2xl sm:text-3xl leading-none">+</span>
+                  <span class="text-[10px] font-extrabold uppercase tracking-wider mt-1">HIGH</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- GAME CLUE LOG / HISTORY -->
+          <div class="rounded-2xl bg-slate-900/85 border border-slate-800 p-3.5">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-display font-semibold text-xs sm:text-sm uppercase tracking-wider text-slate-300">Clue & Action Log</h3>
+              <span id="log-count-badge" class="text-xs text-slate-400 font-semibold">0 events</span>
+            </div>
+            <div id="game-log-list" class="max-h-40 overflow-y-auto space-y-1.5 text-xs sm:text-sm text-slate-200 pr-1"></div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN (5 cols on lg): PRIVATE DEDUCTION NOTEBOOK -->
+        <div id="section-notebook" class="lg:col-span-5 rounded-2xl bg-slate-900/95 border border-slate-700 p-3.5 sm:p-4 shadow-xl space-y-4 scroll-mt-28">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <h3 class="font-display font-bold text-lg sm:text-xl text-white flex items-center gap-2">
+                📓 Private Deduction Notebook
+              </h3>
+              <p class="text-xs text-slate-300">Tap numbers to cross out impossible candidates. Tap again to restore.</p>
+            </div>
+            <button id="btn-notebook-auto-sync" class="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-amber-300 border border-slate-600 transition shrink-0" title="Cross out all visible opponent & clue tiles">
+              Mark Visible
+            </button>
+          </div>
+
+          <!-- 5 Estimated Secret Number Slots -->
+          <div class="p-3 rounded-xl bg-slate-950/90 border border-slate-800">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-bold uppercase tracking-wider text-amber-300">My Estimated 5 Numbers (Low → High)</span>
+              <button id="btn-copy-est-to-guess" class="text-xs font-bold text-sky-400 hover:underline py-1">
+                Use in GOT FIVE! →
+              </button>
+            </div>
+            <div class="grid grid-cols-5 gap-1.5 sm:gap-2" id="notebook-estimates">
+              <input type="number" inputmode="numeric" min="1" max="60" placeholder="#1" data-est="0" class="est-input min-h-[44px] w-full text-center py-2 rounded-lg bg-slate-900 border border-slate-600 font-extrabold text-base sm:text-lg text-white focus:outline-none focus:border-amber-400" />
+              <input type="number" inputmode="numeric" min="1" max="60" placeholder="#2" data-est="1" class="est-input min-h-[44px] w-full text-center py-2 rounded-lg bg-slate-900 border border-slate-600 font-extrabold text-base sm:text-lg text-white focus:outline-none focus:border-amber-400" />
+              <input type="number" inputmode="numeric" min="1" max="60" placeholder="#3" data-est="2" class="est-input min-h-[44px] w-full text-center py-2 rounded-lg bg-slate-900 border border-slate-600 font-extrabold text-base sm:text-lg text-white focus:outline-none focus:border-amber-400" />
+              <input type="number" inputmode="numeric" min="1" max="60" placeholder="#4" data-est="3" class="est-input min-h-[44px] w-full text-center py-2 rounded-lg bg-slate-900 border border-slate-600 font-extrabold text-base sm:text-lg text-white focus:outline-none focus:border-amber-400" />
+              <input type="number" inputmode="numeric" min="1" max="60" placeholder="#5" data-est="4" class="est-input min-h-[44px] w-full text-center py-2 rounded-lg bg-slate-900 border border-slate-600 font-extrabold text-base sm:text-lg text-white focus:outline-none focus:border-amber-400" />
+            </div>
+          </div>
+
+          <!-- Color Legend & Filter -->
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="flex flex-wrap items-center gap-2 font-semibold text-slate-200">
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>Red</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-blue-500"></span>Blue</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>Green</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>Yellow</span>
+              <span class="inline-flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-purple-500"></span>Purple</span>
+            </div>
+            <span class="text-[11px] text-slate-400 font-medium">Ascending (Low → High) • ● = Dots</span>
+          </div>
+
+          <!-- 5 Color-Coded Rows (Red first, Ascending Left to Right) -->
+          <div id="notebook-grid" class="space-y-3 lg:max-h-[560px] lg:overflow-y-auto pr-0.5"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 4. PASS-AND-PLAY PRIVACY SCREEN ==================== -->
+    <section id="screen-privacy" class="hidden fixed inset-0 z-50 bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center">
+      <div class="max-w-md w-full rounded-3xl bg-slate-900 border-2 border-amber-400/50 p-8 shadow-2xl space-y-5">
+        <div class="w-16 h-16 rounded-2xl bg-amber-500/20 text-amber-300 flex items-center justify-center text-3xl mx-auto">
+          🙈
+        </div>
+        <h2 class="font-display font-bold text-3xl text-white">Pass the Device!</h2>
+        <p class="text-slate-300 text-sm">
+          Hide the screen from other players and hand it to:
+        </p>
+        <div id="privacy-next-player" class="py-3 px-6 rounded-2xl bg-amber-500/15 border border-amber-400/40 font-display font-bold text-2xl text-amber-300">
+          Player 2
+        </div>
+        <p class="text-xs text-slate-400">
+          Your private notebook and secret rack colors will unlock when you tap ready.
+        </p>
+        <button id="btn-privacy-ready" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 font-bold text-lg shadow-lg transition">
+          I am Ready – Show My Turn
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================== 5. GOT FIVE! FINAL GUESS MODAL ==================== -->
+    <div id="modal-guess" class="hidden fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+      <div class="max-w-lg w-full rounded-3xl bg-slate-900 border-2 border-amber-400/60 p-6 sm:p-8 shadow-2xl space-y-5">
+        <div class="flex items-center justify-between">
+          <h2 class="font-display font-bold text-2xl sm:text-3xl text-amber-300">🏆 GOT FIVE! Final Guess</h2>
+          <button id="btn-close-guess" class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
+        </div>
+
+        <p class="text-sm text-slate-300">
+          Enter your five secret numbers in <strong>strictly ascending order</strong> (lowest to highest). If all five match, you win immediately!
+        </p>
+
+        <!-- Color hints of your 5 slots -->
+        <div id="guess-slot-color-hints" class="grid grid-cols-5 gap-2 text-center text-xs font-bold"></div>
+
+        <div class="grid grid-cols-5 gap-2">
+          <input type="number" min="1" max="60" class="final-guess-input w-full text-center py-3 rounded-xl bg-slate-950 border-2 border-slate-700 font-display font-bold text-xl text-white focus:outline-none focus:border-amber-400" placeholder="?" />
+          <input type="number" min="1" max="60" class="final-guess-input w-full text-center py-3 rounded-xl bg-slate-950 border-2 border-slate-700 font-display font-bold text-xl text-white focus:outline-none focus:border-amber-400" placeholder="?" />
+          <input type="number" min="1" max="60" class="final-guess-input w-full text-center py-3 rounded-xl bg-slate-950 border-2 border-slate-700 font-display font-bold text-xl text-white focus:outline-none focus:border-amber-400" placeholder="?" />
+          <input type="number" min="1" max="60" class="final-guess-input w-full text-center py-3 rounded-xl bg-slate-950 border-2 border-slate-700 font-display font-bold text-xl text-white focus:outline-none focus:border-amber-400" placeholder="?" />
+          <input type="number" min="1" max="60" class="final-guess-input w-full text-center py-3 rounded-xl bg-slate-950 border-2 border-slate-700 font-display font-bold text-xl text-white focus:outline-none focus:border-amber-400" placeholder="?" />
+        </div>
+
+        <!-- Error / Wrong Guess Feedback -->
+        <div id="guess-feedback-box" class="hidden p-3 rounded-xl bg-rose-500/20 border border-rose-500/50 text-center font-bold text-rose-200 text-sm"></div>
+
+        <div class="flex gap-3 pt-2">
+          <button id="btn-cancel-guess" class="px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold">
+            Cancel
+          </button>
+          <button id="btn-submit-guess" class="flex-1 py-3 rounded-xl bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 hover:brightness-110 text-slate-950 font-display font-bold text-lg shadow-lg transition">
+            Submit GOT FIVE!
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 6. WINNER CELEBRATION MODAL ==================== -->
+    <div id="modal-winner" class="hidden fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-lg flex items-center justify-center p-4">
+      <div class="max-w-xl w-full rounded-3xl bg-gradient-to-b from-slate-900 to-indigo-950 border-2 border-amber-400 p-6 sm:p-8 text-center shadow-2xl space-y-6">
+        <div class="text-5xl sm:text-6xl animate-bounce">🎉🏆🎉</div>
+        <div>
+          <div class="text-xs font-bold uppercase tracking-widest text-amber-300 mb-1">We Have a Champion!</div>
+          <h2 id="winner-title" class="font-display font-bold text-3xl sm:text-5xl text-white">Player 1 GOT FIVE!</h2>
+        </div>
+
+        <div class="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+          <div class="text-xs font-bold uppercase tracking-wider text-slate-400">All Secret Racks Revealed</div>
+          <div id="winner-all-racks" class="space-y-3 text-left"></div>
+        </div>
+
+        <button id="btn-winner-home" class="w-full py-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-display font-bold text-lg shadow-lg transition">
+          Back to Main Menu
+        </button>
+      </div>
+    </div>
+
+    <!-- ==================== 7. RULES MODAL ==================== -->
+    <div id="modal-rules" class="hidden fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+      <div class="max-w-2xl w-full max-h-[85vh] overflow-y-auto rounded-3xl bg-slate-900 border border-slate-700 p-6 sm:p-8 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h2 class="font-display font-bold text-2xl text-amber-300">How to Play GOT FIVE!</h2>
+          <button id="btn-close-rules" class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
+        </div>
+        <div class="space-y-3 text-sm text-slate-300 leading-relaxed">
+          <p><strong>Goal:</strong> Be the first player to deduce all <strong>5 of your own secret numbers</strong> in ascending order!</p>
+          <p><strong>Setup:</strong> There are 60 unique tiles numbered <strong>1 to 60</strong> across 5 colors (Red, Blue, Green, Yellow, Purple), each bearing <strong>1, 2, or 3 dots</strong>. Every player gets 5 secret tiles (one of each color) arranged from lowest to highest. You can see all opponents' numbers, while your own numbers stay hidden.</p>
+          <p><strong>On Your Turn:</strong></p>
+          <ol class="list-decimal list-inside space-y-1.5 pl-2">
+            <li><strong>Draw 1 Tile:</strong> Click the draw pile to reveal 1 new tile and add it to the face-up clue pool.</li>
+            <li><strong>Select 1 Available Clue Tile:</strong> Click any face-up tile in the clue pool and choose an opponent to answer one of two clues:
+              <ul class="list-disc list-inside pl-5 mt-1 space-y-1 text-slate-400">
+                <li><strong class="text-amber-300">SORT:</strong> The opponent places that clue tile into its exact ascending spot among your 5 secret tiles (before #1, between two tiles, or after #5).</li>
+                <li><strong class="text-sky-300">COMPARE:</strong> Pick 1 of your 5 secret slots. The opponent tells you <strong>YES</strong> (placed straight) or <strong>NO</strong> (placed angled) if the clue tile has the exact same number of dots as your secret tile.</li>
+              </ul>
+            </li>
+          </ol>
+          <p><strong>GOT FIVE! Guess:</strong> At any point during your turn, click <strong>GOT FIVE!</strong> and submit your 5 numbers in ascending order. If all 5 are right, you win! If even one is wrong, you simply hear <em>"Wrong guess! Try again."</em> and play continues.</p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ==================== JAVASCRIPT APPLICATION LOGIC ==================== -->
+  <script type="module">
+    import { joinRoom } from "https://esm.run/trystero/nostr";
+
+    // =========================================================================
+    // 1. PWA MANIFEST & SERVICE WORKER REGISTRATION
+    // =========================================================================
+    const manifestObj = {
+      name: "GOT FIVE! – Digital Board Game",
+      short_name: "GOT FIVE!",
+      start_url: "./",
+      display: "standalone",
+      background_color: "#0f172a",
+      theme_color: "#1e1b4b",
+      icons: [
+        {
+          src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%234f46e5'/%3E%3Ctext x='50' y='68' font-size='52' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='%23fde047'%3E5!%3C/text%3E%3C/svg%3E",
+          sizes: "192x192",
+          type: "image/svg+xml"
+        }
+      ]
+    };
+
+    try {
+      const manifestBlob = new Blob([JSON.stringify(manifestObj)], { type: 'application/manifest+json' });
+      const manifestLink = document.createElement('link');
+      manifestLink.rel = 'manifest';
+      manifestLink.href = URL.createObjectURL(manifestBlob);
+      document.head.appendChild(manifestLink);
+    } catch (e) {
+      console.warn("Manifest blob skipped:", e);
+    }
+
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      const swCode = `
+        const CACHE_NAME = 'got-five-v4';
+        self.addEventListener('install', (e) => {
+          self.skipWaiting();
+          e.waitUntil(
+            caches.open(CACHE_NAME).then((cache) => cache.addAll(['./', location.href]).catch(() => {}))
+          );
+        });
+        self.addEventListener('activate', (e) => {
+          e.waitUntil(
+            caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+          );
+          self.clients.claim();
+        });
+        self.addEventListener('fetch', (e) => {
+          if (e.request.method !== 'GET') return;
+          e.respondWith(
+            fetch(e.request)
+              .then((res) => {
+                const clone = res.clone();
+                caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone)).catch(() => {});
+                return res;
+              })
+              .catch(() => caches.match(e.request))
+          );
+        });
+      `;
+      try {
+        const swBlob = new Blob([swCode], { type: 'application/javascript' });
+        navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(() => {});
+      } catch (e) {
+        console.warn("Service worker skipped:", e);
+      }
+    }
+
+    // =========================================================================
+    // 2. TILE DECK DEFINITION (60 UNIQUE TILES: 5 COLORS x 12 NUMBERS)
+    // =========================================================================
+    const COLORS = ['Red', 'Blue', 'Green', 'Yellow', 'Purple'];
+
+    /**
+     * Generates the official 60-tile set.
+     * Each color owns 12 distinct numbers across 1..60, with 1, 2, or 3 dots.
+     */
+    function createFullDeck() {
+      const deck = [];
+      for (let num = 1; num <= 60; num++) {
+        const colorIndex = (num - 1) % 5;
+        const color = COLORS[colorIndex];
+        const dots = ((num + Math.floor((num - 1) / 5)) % 3) + 1;
+        deck.push({ id: num, number: num, color, dots });
+      }
+      return deck;
+    }
+
+    function shuffleArray(arr) {
+      const copy = [...arr];
+      for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+      }
+      return copy;
+    }
+
+    function renderDots(count) {
+      return '●'.repeat(count);
+    }
+
+    // =========================================================================
+    // 3. LOCAL PERSISTENCE (IndexedDB + localStorage fallback)
+    // =========================================================================
+    const DB_NAME = 'GotFiveOfflineDB';
+    const STORE_NAME = 'savedMatches';
+
+    function openLocalDB() {
+      return new Promise((resolve, reject) => {
+        if (!window.indexedDB) return reject(new Error('No IndexedDB'));
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function saveLocalMatch(stateObj) {
+      if (!stateObj || stateObj.mode === 'online' || stateObj.winnerId) return;
+      try {
+        const db = await openLocalDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(JSON.stringify(stateObj), 'activeMatch');
+      } catch (e) {
+        try {
+          localStorage.setItem('gotfive_saved_match', JSON.stringify(stateObj));
+        } catch (_) {}
+      }
+    }
+
+    async function loadLocalMatch() {
+      try {
+        const db = await openLocalDB();
+        return await new Promise((resolve) => {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const req = tx.objectStore(STORE_NAME).get('activeMatch');
+          req.onsuccess = () => resolve(req.result ? JSON.parse(req.result) : null);
+          req.onerror = () => resolve(null);
+        });
+      } catch (e) {
+        try {
+          const raw = localStorage.getItem('gotfive_saved_match');
+          return raw ? JSON.parse(raw) : null;
+        } catch (_) {
+          return null;
+        }
+      }
+    }
+
+    async function clearLocalMatch() {
+      try {
+        const db = await openLocalDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).delete('activeMatch');
+      } catch (_) {}
+      try {
+        localStorage.removeItem('gotfive_saved_match');
+      } catch (_) {}
+    }
+
+    // =========================================================================
+    // 4. CORE GAME STATE & REFEREE ENGINE
+    // =========================================================================
+    let gameState = null;       // Client/Active view state
+    let hostAuthoritative = null; // Full unredacted state held ONLY by room host in Online P2P
+    let myLocalPlayerId = 'p0';
+    let selectedClueTileId = null;
+    let compareModeActive = false;
+    let aiTurnTimer = null;
+
+    // Online P2P variables
+    const P2P_APP_ID = 'got-five-blue-orange-p2p-v1';
+    const RTC_ICE_CONFIG = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+    let p2pRoom = null;
+    let p2pIsHost = false;
+    let p2pRoomCode = '';
+    let p2pLobbyPlayers = []; // [{ id, name, isHost }]
+    let p2pActions = null;
+    let localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
+
+    /**
+     * Initializes a brand new match with valid 60-tile distribution:
+     * - Each player receives 5 secret tiles (one of each color) sorted ascending.
+     * - 5 random tiles placed face-up in the common clue pool.
+     * - Remaining tiles stay in face-down draw pile.
+     */
+    function buildNewMatchState(mode, playersList, difficulty = 'medium', roomCode = null) {
+      const fullDeck = shuffleArray(createFullDeck());
+      const players = playersList.map((p, idx) => {
+        const hand = [];
+        for (const color of COLORS) {
+          const tileIdx = fullDeck.findIndex((t) => t.color === color);
+          hand.push(fullDeck.splice(tileIdx, 1)[0]);
+        }
+        hand.sort((a, b) => a.number - b.number);
+
+        return {
+          id: p.id || `p${idx}`,
+          name: p.name,
+          isAI: Boolean(p.isAI),
+          difficulty: p.difficulty || difficulty,
+          secretTiles: hand,
+          sortGaps: [[], [], [], [], [], []],   // 6 positions around the 5 secret tiles
+          compareClues: [[], [], [], [], []],   // Compared tiles attached to each of the 5 slots
+          notebook: {
+            crossed: [],
+            estimates: ['', '', '', '', '']
+          },
+          aiMemory: p.isAI ? initAIMemory(hand) : null
+        };
+      });
+
+      const faceUpPool = fullDeck.splice(0, 5);
+      const drawPile = fullDeck;
+
+      return {
+        mode, // 'ai' | 'offline' | 'online'
+        roomCode,
+        players,
+        currentTurnIdx: 0,
+        turnStep: 'DRAW', // 'DRAW' | 'CLUE'
+        drawPile,
+        faceUpPool,
+        lastDrawnTile: null,
+        logs: [`Game started with ${players.length} players. 5 face-up clue cards placed.`],
+        winnerId: null,
+        passAndPlayLocked: mode === 'offline'
+      };
+    }
+
+    /**
+     * Creates a filtered view of the authoritative state for a specific online peer
+     * so NO player's browser ever receives their own hidden tile numbers.
+     */
+    function createRedactedViewForPlayer(authState, viewerId) {
+      return {
+        ...authState,
+        drawPileCount: authState.drawPile.length,
+        drawPile: [], // Never expose draw pile order
+        players: authState.players.map((pl) => {
+          const isViewer = pl.id === viewerId;
+          return {
+            id: pl.id,
+            name: pl.name,
+            isAI: false,
+            sortGaps: pl.sortGaps,
+            compareClues: pl.compareClues,
+            secretTiles: pl.secretTiles.map((t) =>
+              isViewer
+                ? { id: null, number: null, color: t.color, dots: null }
+                : { id: t.id, number: t.number, color: t.color, dots: t.dots }
+            )
+          };
+        })
+      };
+    }
+
+    // =========================================================================
+    // 5. FAIR NON-CHEATING AI ENGINE (EASY / MEDIUM / HARD)
+    // =========================================================================
+    function initAIMemory(ownHand) {
+      // AI tracks possible candidate numbers (1..60) for each of its 5 slots
+      // using ONLY its own slot colors (publicly visible on its card backs).
+      const full = createFullDeck();
+      const candidates = ownHand.map((slotTile) =>
+        full.filter((t) => t.color === slotTile.color).map((t) => t.number)
+      );
+      return { candidates };
+    }
+
+    function updateAIDeductions(state, aiPlayer) {
+      if (!aiPlayer.aiMemory) return;
+      const fullDeck = createFullDeck();
+      const tileByNum = Object.fromEntries(fullDeck.map((t) => [t.number, t]));
+
+      // 1. Gather all publicly visible tiles (opponents' hands, face-up pool, all sortGaps, all compareClues)
+      const knownImpossible = new Set();
+      state.faceUpPool.forEach((t) => knownImpossible.add(t.number));
+      state.players.forEach((p) => {
+        if (p.id !== aiPlayer.id) {
+          p.secretTiles.forEach((t) => knownImpossible.add(t.number));
+        }
+        p.sortGaps.forEach((gap) => gap.forEach((t) => knownImpossible.add(t.number)));
+        p.compareClues.forEach((list) => list.forEach((c) => knownImpossible.add(c.tile.number)));
+      });
+
+      // 2. Apply SORT bounds for AI's own rack
+      const lowerBounds = [0, 0, 0, 0, 0];
+      const upperBounds = [61, 61, 61, 61, 61];
+
+      for (let gapIdx = 0; gapIdx < 6; gapIdx++) {
+        for (const t of aiPlayer.sortGaps[gapIdx]) {
+          // Tiles in gapIdx are > slots 0..(gapIdx-1) and < slots gapIdx..4
+          for (let s = 0; s < gapIdx; s++) {
+            upperBounds[s] = Math.min(upperBounds[s], t.number - 1);
+          }
+          for (let s = gapIdx; s < 5; s++) {
+            lowerBounds[s] = Math.max(lowerBounds[s], t.number + 1);
+          }
+        }
+      }
+
+      // 3. Apply COMPARE dot constraints & filter candidates
+      for (let s = 0; s < 5; s++) {
+        const slotColor = aiPlayer.secretTiles[s].color;
+        let valid = aiPlayer.aiMemory.candidates[s].filter((num) => {
+          if (knownImpossible.has(num)) return false;
+          if (num < lowerBounds[s] || num > upperBounds[s]) return false;
+
+          if (aiPlayer.difficulty !== 'easy') {
+            for (const comp of aiPlayer.compareClues[s]) {
+              const candDots = tileByNum[num].dots;
+              if (comp.sameDots && candDots !== comp.tile.dots) return false;
+              if (!comp.sameDots && candDots === comp.tile.dots) return false;
+            }
+          }
+          return true;
+        });
+
+        if (valid.length === 0) {
+          // Fallback safety
+          valid = fullDeck.filter((t) => t.color === slotColor && !knownImpossible.has(t.number)).map((t) => t.number);
+        }
+        aiPlayer.aiMemory.candidates[s] = valid;
+      }
+
+      // 4. Hard AI propagates strict ascending order across adjacent slots iteratively
+      if (aiPlayer.difficulty === 'hard') {
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (let s = 0; s < 4; s++) {
+            const minCurrent = Math.min(...aiPlayer.aiMemory.candidates[s]);
+            const filteredNext = aiPlayer.aiMemory.candidates[s + 1].filter((n) => n > minCurrent);
+            if (filteredNext.length > 0 && filteredNext.length < aiPlayer.aiMemory.candidates[s + 1].length) {
+              aiPlayer.aiMemory.candidates[s + 1] = filteredNext;
+              changed = true;
+            }
+          }
+          for (let s = 4; s > 0; s--) {
+            const maxCurrent = Math.max(...aiPlayer.aiMemory.candidates[s]);
+            const filteredPrev = aiPlayer.aiMemory.candidates[s - 1].filter((n) => n < maxCurrent);
+            if (filteredPrev.length > 0 && filteredPrev.length < aiPlayer.aiMemory.candidates[s - 1].length) {
+              aiPlayer.aiMemory.candidates[s - 1] = filteredPrev;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    function scheduleAITurnIfNeeded() {
+      clearTimeout(aiTurnTimer);
+      if (!gameState || gameState.winnerId || gameState.mode !== 'ai') return;
+      const activePlayer = gameState.players[gameState.currentTurnIdx];
+      if (!activePlayer || !activePlayer.isAI) return;
+
+      aiTurnTimer = setTimeout(() => {
+        runAITurnStep(activePlayer);
+      }, 950);
+    }
+
+    function runAITurnStep(aiPlayer) {
+      if (!gameState || gameState.winnerId) return;
+      updateAIDeductions(gameState, aiPlayer);
+
+      // Check if AI is confident enough to declare GOT FIVE!
+      const cands = aiPlayer.aiMemory.candidates;
+      const confidenceThreshold = aiPlayer.difficulty === 'easy' ? 1 : aiPlayer.difficulty === 'medium' ? 1 : 2;
+      const maxRemaining = Math.max(...cands.map((c) => c.length));
+
+      if (maxRemaining <= confidenceThreshold) {
+        const guess = cands.map((c) => c[Math.floor(Math.random() * c.length)]);
+        const isAscending = guess.every((v, i) => i === 0 || v > guess[i - 1]);
+        if (isAscending) {
+          const isExact = guess.every((v, i) => v === aiPlayer.secretTiles[i].number);
+          if (isExact) {
+            gameState.winnerId = aiPlayer.id;
+            gameState.logs.unshift(`🏆 ${aiPlayer.name} declared GOT FIVE! (${guess.join(', ')}) and WON!`);
+            renderGameScreen();
+            return;
+          } else {
+            gameState.logs.unshift(`❌ ${aiPlayer.name} attempted GOT FIVE! — Wrong guess!`);
+          }
+        }
+      }
+
+      // Step 1: Draw a tile
+      if (gameState.turnStep === 'DRAW') {
+        performDrawAction(aiPlayer.id);
+        aiTurnTimer = setTimeout(() => runAITurnStep(aiPlayer), 900);
+        return;
+      }
+
+      // Step 2: Select an available face-up clue tile and request SORT or COMPARE
+      if (gameState.turnStep === 'CLUE' && gameState.faceUpPool.length > 0) {
+        const opponents = gameState.players.filter((p) => p.id !== aiPlayer.id);
+        const targetOpp = opponents[Math.floor(Math.random() * opponents.length)];
+
+        // Find slot with most remaining uncertainty
+        let uncertainSlot = 0;
+        let maxLen = 0;
+        cands.forEach((c, idx) => {
+          if (c.length > maxLen) {
+            maxLen = c.length;
+            uncertainSlot = idx;
+          }
+        });
+
+        let chosenTile = gameState.faceUpPool[0];
+        if (aiPlayer.difficulty !== 'easy') {
+          // Pick a face-up tile closest to the median of the uncertain slot
+          const mid = cands[uncertainSlot][Math.floor(cands[uncertainSlot].length / 2)];
+          chosenTile = [...gameState.faceUpPool].sort(
+            (a, b) => Math.abs(a.number - mid) - Math.abs(b.number - mid)
+          )[0];
+        } else {
+          chosenTile = gameState.faceUpPool[Math.floor(Math.random() * gameState.faceUpPool.length)];
+        }
+
+        const useCompare = aiPlayer.difficulty !== 'easy' && Math.random() < 0.35 && aiPlayer.compareClues[uncertainSlot].length < 2;
+        if (useCompare) {
+          performCompareAction(aiPlayer.id, targetOpp.id, chosenTile.id, uncertainSlot);
+        } else {
+          performSortAction(aiPlayer.id, targetOpp.id, chosenTile.id);
+        }
+      }
+    }
+
+    // =========================================================================
+    // 6. GAMEPLAY ACTIONS (DRAW, SORT, COMPARE, FINAL GUESS)
+    // =========================================================================
+    function getAuthoritativeState() {
+      return gameState && gameState.mode === 'online' ? hostAuthoritative : gameState;
+    }
+
+    function performDrawAction(playerId) {
+      const state = getAuthoritativeState();
+      if (!state || state.winnerId) return;
+      const activePlayer = state.players[state.currentTurnIdx];
+      if (activePlayer.id !== playerId || state.turnStep !== 'DRAW') return;
+
+      if (state.drawPile.length === 0) {
+        state.turnStep = 'CLUE';
+        state.logs.unshift(`⚠️ Draw pile is empty! ${activePlayer.name} must pick from the face-up clue pool.`);
+      } else {
+        const drawn = state.drawPile.shift();
+        state.faceUpPool.push(drawn);
+        state.lastDrawnTile = drawn;
+        state.turnStep = 'CLUE';
+        state.logs.unshift(`🎴 ${activePlayer.name} drew #${drawn.number} (${drawn.color}, ${renderDots(drawn.dots)}) into the clue pool.`);
+      }
+
+      selectedClueTileId = null;
+      compareModeActive = false;
+      syncAndRenderAfterAction();
+    }
+
+    function performSortAction(playerId, targetOpponentId, clueTileId) {
+      const state = getAuthoritativeState();
+      if (!state || state.winnerId) return;
+      const activePlayer = state.players[state.currentTurnIdx];
+      if (activePlayer.id !== playerId || state.turnStep !== 'CLUE') return;
+
+      const poolIdx = state.faceUpPool.findIndex((t) => t.id === clueTileId);
+      if (poolIdx === -1) {
+        showToast("You can only select an available face-up clue tile!", "error");
+        return;
+      }
+
+      const [clueTile] = state.faceUpPool.splice(poolIdx, 1);
+      // Determine ascending position (0..5) relative to activePlayer's 5 secret tiles
+      let gapIndex = 0;
+      while (gapIndex < 5 && clueTile.number > activePlayer.secretTiles[gapIndex].number) {
+        gapIndex++;
+      }
+
+      activePlayer.sortGaps[gapIndex].push(clueTile);
+      activePlayer.sortGaps[gapIndex].sort((a, b) => a.number - b.number);
+
+      const opp = state.players.find((p) => p.id === targetOpponentId) || state.players[0];
+      const posDesc =
+        gapIndex === 0
+          ? 'before Slot #1 (lowest)'
+          : gapIndex === 5
+          ? 'after Slot #5 (highest)'
+          : `between Slot #${gapIndex} and Slot #${gapIndex + 1}`;
+
+      state.logs.unshift(
+        `↕️ ${activePlayer.name} asked ${opp.name} to SORT #${clueTile.number} (${clueTile.color}) → placed ${posDesc}.`
+      );
+
+      advanceToNextTurn(state);
+    }
+
+    function performCompareAction(playerId, targetOpponentId, clueTileId, slotIndex) {
+      const state = getAuthoritativeState();
+      if (!state || state.winnerId) return;
+      const activePlayer = state.players[state.currentTurnIdx];
+      if (activePlayer.id !== playerId || state.turnStep !== 'CLUE') return;
+      if (slotIndex < 0 || slotIndex > 4) return;
+
+      const poolIdx = state.faceUpPool.findIndex((t) => t.id === clueTileId);
+      if (poolIdx === -1) {
+        showToast("You can only select an available face-up clue tile!", "error");
+        return;
+      }
+
+      const [clueTile] = state.faceUpPool.splice(poolIdx, 1);
+      const secretSlotTile = activePlayer.secretTiles[slotIndex];
+      const sameDots = clueTile.dots === secretSlotTile.dots;
+
+      activePlayer.compareClues[slotIndex].push({
+        tile: clueTile,
+        sameDots
+      });
+
+      const opp = state.players.find((p) => p.id === targetOpponentId) || state.players[0];
+      state.logs.unshift(
+        `⚖️ ${activePlayer.name} asked ${opp.name} to COMPARE #${clueTile.number} (${renderDots(clueTile.dots)}) with Slot #${slotIndex + 1} → ${sameDots ? 'YES (Straight)' : 'NO (Angled)'}.`
+      );
+
+      advanceToNextTurn(state);
+    }
+
+    function evaluateFinalGuess(playerId, guessNumbers) {
+      const state = getAuthoritativeState();
+      if (!state || state.winnerId) return { ok: false, message: 'Game already ended.' };
+
+      const player = state.players.find((p) => p.id === playerId);
+      if (!player) return { ok: false, message: 'Player not found.' };
+
+      if (guessNumbers.length !== 5 || guessNumbers.some((n) => !Number.isInteger(n) || n < 1 || n > 60)) {
+        return { ok: false, message: 'Enter 5 valid numbers between 1 and 60.' };
+      }
+
+      for (let i = 1; i < 5; i++) {
+        if (guessNumbers[i] <= guessNumbers[i - 1]) {
+          return { ok: false, message: 'Numbers must be in strictly ascending order!' };
+        }
+      }
+
+      const isAllMatch = guessNumbers.every((num, idx) => num === player.secretTiles[idx].number);
+      if (isAllMatch) {
+        state.winnerId = player.id;
+        state.logs.unshift(`🏆 ${player.name} declared GOT FIVE! (${guessNumbers.join(', ')}) and WON THE GAME!`);
+        syncAndRenderAfterAction();
+        return { ok: true, won: true };
+      } else {
+        state.logs.unshift(`❌ ${player.name} attempted GOT FIVE! — Wrong guess! Try again.`);
+        syncAndRenderAfterAction();
+        return { ok: true, won: false, message: 'Wrong guess! Try again.' };
+      }
+    }
+
+    function advanceToNextTurn(state) {
+      selectedClueTileId = null;
+      compareModeActive = false;
+      state.turnStep = 'DRAW';
+      state.currentTurnIdx = (state.currentTurnIdx + 1) % state.players.length;
+
+      if (state.mode === 'offline') {
+        myLocalPlayerId = state.players[state.currentTurnIdx].id;
+        state.passAndPlayLocked = true;
+      }
+
+      syncAndRenderAfterAction();
+    }
+
+    function syncAndRenderAfterAction() {
+      if (!gameState) return;
+
+      if (gameState.mode === 'online' && p2pIsHost && hostAuthoritative) {
+        gameState = createRedactedViewForPlayer(hostAuthoritative, myLocalPlayerId);
+        broadcastHostGameState();
+      } else if (gameState.mode !== 'online') {
+        if (gameState.winnerId) {
+          clearLocalMatch();
+        } else {
+          saveLocalMatch(gameState);
+        }
+      }
+
+      renderGameScreen();
+      scheduleAITurnIfNeeded();
+    }
+
+    // =========================================================================
+    // 7. SERVERLESS WEBRTC ONLINE MULTIPLAYER (TRYSTERO)
+    // =========================================================================
+    function generateRoomCode() {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let code = '';
+      for (let i = 0; i < 5; i++) {
+        code += chars[Math.floor(Math.random() * chars.length)];
+      }
+      return code;
+    }
+
+    function cleanupP2PRoom() {
+      if (p2pRoom) {
+        try {
+          p2pRoom.leave();
+        } catch (_) {}
+      }
+      p2pRoom = null;
+      p2pActions = null;
+      p2pLobbyPlayers = [];
+      hostAuthoritative = null;
+    }
+
+    function connectToTrysteroRoom(roomCode, playerName, asHost) {
+      if (!navigator.onLine) {
+        showToast("Internet connection required for Online Multiplayer.", "error");
+        return;
+      }
+
+      cleanupP2PRoom();
+      p2pIsHost = asHost;
+      p2pRoomCode = roomCode;
+      localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
+
+      try {
+        p2pRoom = joinRoom({ appId: P2P_APP_ID, rtcConfig: RTC_ICE_CONFIG }, roomCode);
+        myLocalPlayerId = p2pRoom.selfId;
+      } catch (err) {
+        showToast("Could not initialize WebRTC room. Check browser permissions.", "error");
+        return;
+      }
+
+      const [sendLobby, onLobby] = p2pRoom.makeAction('lobby');
+      const [sendHello, onHello] = p2pRoom.makeAction('hello');
+      const [sendState, onState] = p2pRoom.makeAction('state');
+      const [sendCmd, onCmd] = p2pRoom.makeAction('cmd');
+      const [sendGuessRes, onGuessRes] = p2pRoom.makeAction('guessRes');
+
+      p2pActions = { sendLobby, sendHello, sendState, sendCmd, sendGuessRes };
+
+      if (asHost) {
+        p2pLobbyPlayers = [{ id: myLocalPlayerId, name: playerName, isHost: true }];
+        renderOnlineWaitingRoom();
+      } else {
+        p2pLobbyPlayers = [{ id: myLocalPlayerId, name: playerName, isHost: false }];
+        renderOnlineWaitingRoom();
+      }
+
+      p2pRoom.onPeerJoin((peerId) => {
+        if (!p2pIsHost) {
+          sendHello({ name: playerName }, peerId);
+        } else {
+          sendLobby({ players: p2pLobbyPlayers }, peerId);
+          if (hostAuthoritative) {
+            sendState({ view: createRedactedViewForPlayer(hostAuthoritative, peerId) }, peerId);
+          }
+        }
+      });
+
+      p2pRoom.onPeerLeave((peerId) => {
+        if (p2pIsHost) {
+          p2pLobbyPlayers = p2pLobbyPlayers.filter((p) => p.id !== peerId);
+          sendLobby({ players: p2pLobbyPlayers });
+          renderOnlineWaitingRoom();
+          showToast("A player disconnected from the room.", "info");
+        }
+      });
+
+      onHello((data, peerId) => {
+        if (!p2pIsHost) return;
+        if (p2pLobbyPlayers.length >= 4 && !p2pLobbyPlayers.some((p) => p.id === peerId)) {
+          return;
+        }
+        const existing = p2pLobbyPlayers.find((p) => p.id === peerId);
+        if (existing) {
+          existing.name = data.name || existing.name;
+        } else {
+          p2pLobbyPlayers.push({ id: peerId, name: data.name || 'Guest', isHost: false });
+        }
+        sendLobby({ players: p2pLobbyPlayers });
+        renderOnlineWaitingRoom();
+      });
+
+      onLobby((data) => {
+        if (p2pIsHost) return;
+        p2pLobbyPlayers = data.players || [];
+        renderOnlineWaitingRoom();
+      });
+
+      onState((data) => {
+        if (p2pIsHost || !data || !data.view) return;
+        gameState = data.view;
+        showScreen('screen-game');
+        renderGameScreen();
+      });
+
+      onCmd((cmd, peerId) => {
+        if (!p2pIsHost || !hostAuthoritative) return;
+        if (cmd.type === 'DRAW') {
+          performDrawAction(peerId);
+        } else if (cmd.type === 'SORT') {
+          performSortAction(peerId, cmd.targetOpponentId, cmd.clueTileId);
+        } else if (cmd.type === 'COMPARE') {
+          performCompareAction(peerId, cmd.targetOpponentId, cmd.clueTileId, cmd.slotIndex);
+        } else if (cmd.type === 'GUESS') {
+          const result = evaluateFinalGuess(peerId, cmd.numbers);
+          sendGuessRes(result, peerId);
+        }
+      });
+
+      onGuessRes((res) => {
+        handleGuessModalResponse(res);
+      });
+    }
+
+    function broadcastHostGameState() {
+      if (!p2pIsHost || !p2pRoom || !p2pActions || !hostAuthoritative) return;
+      for (const pl of hostAuthoritative.players) {
+        if (pl.id !== myLocalPlayerId) {
+          const view = createRedactedViewForPlayer(hostAuthoritative, pl.id);
+          p2pActions.sendState({ view }, pl.id);
+        }
+      }
+    }
+
+    // =========================================================================
+    // 8. UI RENDERING & INTERACTION CONTROLLERS
+    // =========================================================================
+    const screens = ['screen-menu', 'screen-setup-online', 'screen-setup-ai', 'screen-setup-offline', 'screen-game'];
+
+    function showScreen(screenId) {
+      screens.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', id !== screenId);
+      });
+      const exitBtn = document.getElementById('btn-exit-game');
+      if (exitBtn) exitBtn.classList.toggle('hidden', screenId !== 'screen-game');
+    }
+
+    function showToast(msg, type = 'info') {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+      const colors = {
+        info: 'bg-slate-900/95 border-indigo-400/60 text-white',
+        error: 'bg-rose-950/95 border-rose-500 text-rose-100',
+        success: 'bg-emerald-950/95 border-emerald-400 text-emerald-100'
+      };
+      const el = document.createElement('div');
+      el.className = `pointer-events-auto px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-semibold shadow-2xl transition-all duration-300 ${colors[type] || colors.info}`;
+      el.textContent = msg;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 300);
+      }, 3200);
+    }
+
+    function updateNetworkIndicator() {
+      const online = navigator.onLine;
+      const badge = document.getElementById('network-badge');
+      const dot = document.getElementById('network-dot');
+      const text = document.getElementById('network-text');
+      const warn = document.getElementById('online-offline-warning');
+
+      if (online) {
+        badge.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30';
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+        text.textContent = 'ONLINE';
+        if (warn) warn.classList.add('hidden');
+      } else {
+        badge.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40';
+        dot.className = 'w-2 h-2 rounded-full bg-amber-400';
+        text.textContent = 'OFFLINE';
+        if (warn) warn.classList.remove('hidden');
+      }
+    }
+
+    function renderOnlineWaitingRoom() {
+      document.getElementById('online-lobby-actions').classList.add('hidden');
+      document.getElementById('online-waiting-room').classList.remove('hidden');
+      document.getElementById('display-room-code').textContent = p2pRoomCode;
+      document.getElementById('lobby-player-count').textContent = `${p2pLobbyPlayers.length} / 4`;
+
+      const listEl = document.getElementById('lobby-players-list');
+      listEl.innerHTML = p2pLobbyPlayers
+        .map(
+          (p) => `
+          <div class="flex items-center justify-between px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <span class="font-bold text-sm text-white">${escapeHtml(p.name)} ${p.id === myLocalPlayerId ? '<span class="text-xs text-amber-300">(You)</span>' : ''}</span>
+            <span class="text-xs font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">${p.isHost ? 'HOST' : 'PLAYER'}</span>
+          </div>`
+        )
+        .join('');
+
+      const startBtn = document.getElementById('btn-start-online-game');
+      const waitMsg = document.getElementById('waiting-for-host-msg');
+      if (p2pIsHost) {
+        startBtn.classList.remove('hidden');
+        waitMsg.classList.add('hidden');
+        startBtn.disabled = p2pLobbyPlayers.length < 2;
+      } else {
+        startBtn.classList.add('hidden');
+        waitMsg.classList.remove('hidden');
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderTileElement(tile, options = {}) {
+      const { small = false, clickable = false, selected = false, angled = false, straight = false, hiddenNum = false } = options;
+      const sizeClasses = small ? 'w-11 h-14 sm:w-12 sm:h-16 text-base sm:text-lg' : 'w-14 h-18 sm:w-16 sm:h-20 text-xl sm:text-2xl';
+      const stateClasses = [
+        clickable ? 'clickable' : '',
+        selected ? 'selected-tile' : '',
+        angled ? 'angled-no' : '',
+        straight ? 'straight-yes' : ''
+      ].join(' ');
+
+      const displayLabel = hiddenNum ? '?' : tile.number;
+      const dotsDisplay = hiddenNum ? tile.color.slice(0, 3).toUpperCase() : renderDots(tile.dots);
+
+      return `
+        <div ${clickable ? `data-tile-id="${tile.id}"` : ''} class="game-tile tile-${tile.color} ${sizeClasses} ${stateClasses} flex flex-col items-center justify-center text-white shrink-0 select-none">
+          <span class="tile-num leading-none">${displayLabel}</span>
+          <span class="text-[10px] sm:text-xs font-bold tracking-widest mt-1 opacity-95">${dotsDisplay}</span>
+        </div>
+      `;
+    }
+
+    function getActiveViewerPlayer() {
+      if (!gameState) return null;
+      if (gameState.mode === 'offline') {
+        return gameState.players[gameState.currentTurnIdx];
+      }
+      return gameState.players.find((p) => p.id === myLocalPlayerId) || gameState.players[0];
+    }
+
+    function renderGameScreen() {
+      if (!gameState) return;
+
+      // Pass-and-Play privacy screen check
+      const privacyScreen = document.getElementById('screen-privacy');
+      if (gameState.mode === 'offline' && gameState.passAndPlayLocked && !gameState.winnerId) {
+        const nextP = gameState.players[gameState.currentTurnIdx];
+        document.getElementById('privacy-next-player').textContent = nextP.name;
+        privacyScreen.classList.remove('hidden');
+      } else {
+        privacyScreen.classList.add('hidden');
+      }
+
+      const activePlayer = gameState.players[gameState.currentTurnIdx];
+      const viewerPlayer = getActiveViewerPlayer();
+      const isMyTurn = activePlayer.id === viewerPlayer.id && !gameState.winnerId;
+
+      // Header Turn Banner
+      document.getElementById('turn-avatar').textContent = activePlayer.name.slice(0, 2).toUpperCase();
+      document.getElementById('turn-player-name').textContent = `${activePlayer.name}'s Turn`;
+      const roomBadge = document.getElementById('room-badge-ingame');
+      if (gameState.mode === 'online' && gameState.roomCode) {
+        roomBadge.textContent = `ROOM: ${gameState.roomCode}`;
+        roomBadge.classList.remove('hidden');
+      } else {
+        roomBadge.classList.add('hidden');
+      }
+
+      const instEl = document.getElementById('turn-instruction');
+      if (gameState.winnerId) {
+        const winP = gameState.players.find((p) => p.id === gameState.winnerId);
+        instEl.textContent = `🏆 ${winP ? winP.name : 'Winner'} cracked GOT FIVE!`;
+      } else if (!isMyTurn) {
+        instEl.textContent = `Waiting for ${activePlayer.name} to make a move...`;
+      } else if (gameState.turnStep === 'DRAW') {
+        instEl.textContent = `Step 1: Tap the DRAW pile to reveal 1 tile.`;
+      } else {
+        instEl.textContent = `Step 2: Select 1 face-up clue card below and choose SORT or COMPARE.`;
+      }
+
+      // Draw Pile Count & Button
+      const drawCount = gameState.mode === 'online' && typeof gameState.drawPileCount === 'number'
+        ? gameState.drawPileCount
+        : gameState.drawPile.length;
+      document.getElementById('draw-pile-count').textContent = `${drawCount} left`;
+      document.getElementById('btn-draw-tile').disabled = !(isMyTurn && gameState.turnStep === 'DRAW');
+
+      // Last Drawn Tile Badge
+      const lastDrawnBadge = document.getElementById('last-drawn-badge');
+      if (gameState.lastDrawnTile) {
+        lastDrawnBadge.classList.remove('hidden');
+        document.getElementById('last-drawn-text').textContent = `#${gameState.lastDrawnTile.number} ${gameState.lastDrawnTile.color} (${renderDots(gameState.lastDrawnTile.dots)})`;
+      } else {
+        lastDrawnBadge.classList.add('hidden');
+      }
+
+      // Face-up Clue Pool
+      const poolEl = document.getElementById('faceup-pool-container');
+      const canSelectClue = isMyTurn && gameState.turnStep === 'CLUE';
+      poolEl.innerHTML = gameState.faceUpPool
+        .map((tile) =>
+          renderTileElement(tile, {
+            clickable: canSelectClue,
+            selected: selectedClueTileId === tile.id
+          })
+        )
+        .join('');
+
+      if (canSelectClue) {
+        poolEl.querySelectorAll('[data-tile-id]').forEach((el) => {
+          el.addEventListener('click', () => {
+            const tid = Number(el.getAttribute('data-tile-id'));
+            selectedClueTileId = selectedClueTileId === tid ? null : tid;
+            compareModeActive = false;
+            renderGameScreen();
+          });
+        });
+      }
+
+      // Clue Action Builder Panel
+      const actionPanel = document.getElementById('clue-action-panel');
+      if (canSelectClue) {
+        actionPanel.classList.remove('hidden');
+        const chosenTile = gameState.faceUpPool.find((t) => t.id === selectedClueTileId);
+        document.getElementById('selected-clue-label').textContent = chosenTile
+          ? `#${chosenTile.number} ${chosenTile.color} (${renderDots(chosenTile.dots)})`
+          : 'None (Tap a tile above)';
+
+        const oppSelect = document.getElementById('select-target-opponent');
+        const prevVal = oppSelect.value;
+        const opponents = gameState.players.filter((p) => p.id !== viewerPlayer.id);
+        oppSelect.innerHTML = opponents
+          .map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`)
+          .join('');
+        if (opponents.some((o) => o.id === prevVal)) oppSelect.value = prevVal;
+
+        document.getElementById('btn-action-sort').disabled = !chosenTile;
+        document.getElementById('btn-action-compare').disabled = !chosenTile;
+
+        const slotPicker = document.getElementById('compare-slot-picker');
+        if (compareModeActive && chosenTile) {
+          slotPicker.classList.remove('hidden');
+          const slotBtns = document.getElementById('compare-slot-buttons');
+          slotBtns.innerHTML = viewerPlayer.secretTiles
+            .map(
+              (st, idx) => `
+              <button type="button" data-slot-idx="${idx}" class="min-h-[46px] py-2 px-1 rounded-xl tile-${st.color} text-white font-display font-bold text-xs sm:text-sm shadow hover:brightness-110 transition">
+                #${idx + 1}<br><span class="text-[10px] opacity-90">${st.color}</span>
+              </button>`
+            )
+            .join('');
+          slotBtns.querySelectorAll('[data-slot-idx]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const sIdx = Number(btn.getAttribute('data-slot-idx'));
+              const targetOppId = oppSelect.value;
+              if (gameState.mode === 'online' && !p2pIsHost) {
+                p2pActions.sendCmd({
+                  type: 'COMPARE',
+                  targetOpponentId: targetOppId,
+                  clueTileId: chosenTile.id,
+                  slotIndex: sIdx
+                });
+                selectedClueTileId = null;
+                compareModeActive = false;
+              } else {
+                performCompareAction(viewerPlayer.id, targetOppId, chosenTile.id, sIdx);
+              }
+            });
+          });
+        } else {
+          slotPicker.classList.add('hidden');
+        }
+      } else {
+        actionPanel.classList.add('hidden');
+      }
+
+      // Render Opponents' Racks (Visible numbers!)
+      const oppContainer = document.getElementById('opponents-container');
+      const otherPlayers = gameState.players.filter((p) => p.id !== viewerPlayer.id);
+      oppContainer.innerHTML = otherPlayers
+        .map((opp) => {
+          const isTurn = opp.id === activePlayer.id;
+          return `
+            <div class="p-3 rounded-xl bg-slate-950/80 border ${isTurn ? 'border-amber-400 active-turn-ring' : 'border-slate-800'} space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-display font-bold text-sm text-white">${escapeHtml(opp.name)} ${opp.isAI ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase">${opp.difficulty}</span>` : ''}</span>
+                ${isTurn ? '<span class="text-[10px] font-bold text-amber-300 uppercase">● Active</span>' : ''}
+              </div>
+              <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
+                ${opp.secretTiles.map((t) => renderTileElement(t, { small: true })).join('')}
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      // Render Viewer's Own Secret Rack + Interleaved SORT Clues + COMPARE Clues
+      document.getElementById('my-rack-title').textContent = `${viewerPlayer.name}'s Secret Rack`;
+      const slotsTrack = document.getElementById('my-rack-slots-container');
+      let trackHtml = '';
+
+      for (let i = 0; i < 5; i++) {
+        // Gap before slot i
+        if (viewerPlayer.sortGaps[i] && viewerPlayer.sortGaps[i].length > 0) {
+          trackHtml += `<div class="flex items-center gap-1 px-1.5 py-2 rounded-xl bg-amber-500/10 border border-amber-400/30 self-center">`;
+          for (const st of viewerPlayer.sortGaps[i]) {
+            trackHtml += renderTileElement(st, { small: true });
+          }
+          trackHtml += `</div>`;
+        }
+
+        // Secret Slot i + attached compare clues underneath
+        const slotTile = viewerPlayer.secretTiles[i];
+        const compares = viewerPlayer.compareClues[i] || [];
+        trackHtml += `
+          <div class="flex flex-col items-center gap-1.5">
+            <span class="text-[11px] font-bold text-slate-400">Slot #${i + 1}</span>
+            ${renderTileElement(slotTile, { hiddenNum: true })}
+            ${
+              compares.length > 0
+                ? `<div class="flex flex-col items-center gap-1 mt-1">
+                    ${compares
+                      .map(
+                        (c) => `
+                        <div class="flex flex-col items-center">
+                          ${renderTileElement(c.tile, { small: true, straight: c.sameDots, angled: !c.sameDots })}
+                          <span class="text-[10px] font-extrabold mt-0.5 ${c.sameDots ? 'text-emerald-400' : 'text-rose-400'}">${c.sameDots ? 'YES =' : 'NO ≠'}</span>
+                        </div>`
+                      )
+                      .join('')}
+                  </div>`
+                : ''
+            }
+          </div>
+        `;
+      }
+
+      // Trailing gap 5 (after slot #5)
+      if (viewerPlayer.sortGaps[5] && viewerPlayer.sortGaps[5].length > 0) {
+        trackHtml += `<div class="flex items-center gap-1 px-1.5 py-2 rounded-xl bg-amber-500/10 border border-amber-400/30 self-center">`;
+        for (const st of viewerPlayer.sortGaps[5]) {
+          trackHtml += renderTileElement(st, { small: true });
+        }
+        trackHtml += `</div>`;
+      }
+      slotsTrack.innerHTML = trackHtml;
+
+      // Render Clue & Action Log
+      document.getElementById('log-count-badge').textContent = `${gameState.logs.length} events`;
+      document.getElementById('game-log-list').innerHTML = gameState.logs
+        .map((entry) => `<div class="px-2.5 py-1.5 rounded-lg bg-slate-950/70 border border-slate-800/70">${escapeHtml(entry)}</div>`)
+        .join('');
+
+      // Render Private Deduction Notebook (Color-wise rows starting with Red, ascending order)
+      renderPrivateNotebook(viewerPlayer);
+
+      // Winner Modal check
+      const winnerModal = document.getElementById('modal-winner');
+      if (gameState.winnerId) {
+        const winner = gameState.players.find((p) => p.id === gameState.winnerId);
+        document.getElementById('winner-title').textContent = `${winner ? winner.name : 'Player'} GOT FIVE!`;
+        const allRacksHtml = (hostAuthoritative || gameState).players
+          .map(
+            (p) => `
+            <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <span class="font-bold text-sm text-white">${escapeHtml(p.name)}</span>
+              <div class="flex items-center gap-1.5">
+                ${p.secretTiles.map((t) => renderTileElement(t, { small: true })).join('')}
+              </div>
+            </div>`
+          )
+          .join('');
+        document.getElementById('winner-all-racks').innerHTML = allRacksHtml;
+        winnerModal.classList.remove('hidden');
+      } else {
+        winnerModal.classList.add('hidden');
+      }
+    }
+
+    function getActiveNotebookData(viewerPlayer) {
+      if (gameState && gameState.mode === 'online') {
+        return localOnlineNotebook;
+      }
+      if (!viewerPlayer.notebook) {
+        viewerPlayer.notebook = { crossed: [], estimates: ['', '', '', '', ''] };
+      }
+      return viewerPlayer.notebook;
+    }
+
+    function renderPrivateNotebook(viewerPlayer) {
+      const nb = getActiveNotebookData(viewerPlayer);
+      const crossedSet = new Set(nb.crossed);
+      const fullDeck = createFullDeck();
+
+      // Sync estimate inputs
+      document.querySelectorAll('.est-input').forEach((inp) => {
+        const idx = Number(inp.getAttribute('data-est'));
+        if (document.activeElement !== inp) {
+          inp.value = nb.estimates[idx] || '';
+        }
+      });
+
+      const colorStyles = {
+        Red: 'border-red-500/40 bg-red-950/25 text-red-200',
+        Blue: 'border-blue-500/40 bg-blue-950/25 text-blue-200',
+        Green: 'border-emerald-500/40 bg-emerald-950/25 text-emerald-200',
+        Yellow: 'border-amber-500/40 bg-amber-950/25 text-amber-200',
+        Purple: 'border-purple-500/40 bg-purple-950/25 text-purple-200'
+      };
+
+      const nbGrid = document.getElementById('notebook-grid');
+      nbGrid.innerHTML = COLORS.map((color) => {
+        const rowTiles = fullDeck.filter((t) => t.color === color).sort((a, b) => a.number - b.number);
+        return `
+          <div class="p-2.5 rounded-xl border ${colorStyles[color]}">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-extrabold uppercase tracking-wider">${color}</span>
+              <span class="text-[10px] opacity-80">Low → High</span>
+            </div>
+            <div class="grid grid-cols-6 gap-1.5">
+              ${rowTiles
+                .map((t) => {
+                  const isCrossed = crossedSet.has(t.number);
+                  return `
+                    <button type="button" data-nb-num="${t.number}" class="notebook-cell-btn py-1.5 px-1 rounded-lg border text-center transition flex flex-col items-center justify-center ${
+                      isCrossed
+                        ? 'bg-slate-950/80 border-slate-800 text-slate-600 line-through opacity-45'
+                        : 'bg-slate-900/90 hover:bg-slate-800 border-slate-700 text-white shadow-sm'
+                    }">
+                      <span class="font-extrabold text-sm leading-none">${t.number}</span>
+                      <span class="text-[9px] tracking-tighter mt-0.5 opacity-80">${renderDots(t.dots)}</span>
+                    </button>`;
+                })
+                .join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      nbGrid.querySelectorAll('[data-nb-num]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const num = Number(btn.getAttribute('data-nb-num'));
+          const idx = nb.crossed.indexOf(num);
+          if (idx >= 0) {
+            nb.crossed.splice(idx, 1);
+          } else {
+            nb.crossed.push(num);
+          }
+          if (gameState.mode !== 'online') saveLocalMatch(gameState);
+          renderPrivateNotebook(viewerPlayer);
+        });
+      });
+    }
+
+    function handleGuessModalResponse(res) {
+      const feedbackBox = document.getElementById('guess-feedback-box');
+      if (!res) return;
+      if (!res.ok) {
+        feedbackBox.textContent = res.message || 'Invalid guess.';
+        feedbackBox.classList.remove('hidden');
+        return;
+      }
+      if (res.won) {
+        document.getElementById('modal-guess').classList.add('hidden');
+        feedbackBox.classList.add('hidden');
+      } else {
+        feedbackBox.textContent = 'Wrong guess! Try again.';
+        feedbackBox.classList.remove('hidden');
+        showToast('Wrong guess! Try again.', 'error');
+      }
+    }
+
+    // =========================================================================
+    // 9. EVENT LISTENERS & INITIALIZATION
+    // =========================================================================
+    function initEventListeners() {
+      // Main Menu Mode Selectors
+      document.getElementById('mode-online-btn').addEventListener('click', () => {
+        updateNetworkIndicator();
+        document.getElementById('online-lobby-actions').classList.remove('hidden');
+        document.getElementById('online-waiting-room').classList.add('hidden');
+        showScreen('screen-setup-online');
+      });
+
+      document.getElementById('mode-ai-btn').addEventListener('click', () => {
+        showScreen('screen-setup-ai');
+      });
+
+      document.getElementById('mode-offline-btn').addEventListener('click', () => {
+        renderOfflineNameInputs(2);
+        showScreen('screen-setup-offline');
+      });
+
+      document.querySelectorAll('.back-to-menu').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          cleanupP2PRoom();
+          showScreen('screen-menu');
+        });
+      });
+
+      document.getElementById('nav-home-btn').addEventListener('click', () => {
+        if (!gameState || gameState.winnerId) {
+          cleanupP2PRoom();
+          showScreen('screen-menu');
+        }
+      });
+
+      document.getElementById('btn-exit-game').addEventListener('click', () => {
+        clearTimeout(aiTurnTimer);
+        cleanupP2PRoom();
+        gameState = null;
+        checkResumeBanner();
+        showScreen('screen-menu');
+      });
+
+      // Rules Modal
+      document.getElementById('btn-open-rules').addEventListener('click', () => {
+        document.getElementById('modal-rules').classList.remove('hidden');
+      });
+      document.getElementById('btn-close-rules').addEventListener('click', () => {
+        document.getElementById('modal-rules').classList.add('hidden');
+      });
+
+      // Online Room Creation & Joining
+      document.getElementById('btn-create-room').addEventListener('click', () => {
+        const name = document.getElementById('online-player-name').value.trim() || 'Host';
+        const code = generateRoomCode();
+        connectToTrysteroRoom(code, name, true);
+      });
+
+      document.getElementById('btn-join-room').addEventListener('click', () => {
+        const name = document.getElementById('online-player-name').value.trim() || 'Player';
+        const code = document.getElementById('join-room-code-input').value.trim().toUpperCase();
+        if (code.length < 4) {
+          showToast('Please enter a valid room code.', 'error');
+          return;
+        }
+        connectToTrysteroRoom(code, name, false);
+      });
+
+      document.getElementById('btn-copy-code').addEventListener('click', () => {
+        const code = document.getElementById('display-room-code').textContent;
+        const temp = document.createElement('textarea');
+        temp.value = code;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand('copy');
+        temp.remove();
+        showToast(`Room code ${code} copied!`, 'success');
+      });
+
+      document.getElementById('btn-leave-room').addEventListener('click', () => {
+        cleanupP2PRoom();
+        document.getElementById('online-lobby-actions').classList.remove('hidden');
+        document.getElementById('online-waiting-room').classList.add('hidden');
+      });
+
+      document.getElementById('btn-start-online-game').addEventListener('click', () => {
+        if (!p2pIsHost || p2pLobbyPlayers.length < 2) return;
+        hostAuthoritative = buildNewMatchState('online', p2pLobbyPlayers, 'medium', p2pRoomCode);
+        gameState = createRedactedViewForPlayer(hostAuthoritative, myLocalPlayerId);
+        broadcastHostGameState();
+        showScreen('screen-game');
+        renderGameScreen();
+      });
+
+      // AI Setup Controls
+      let selectedAICount = 1;
+      let selectedAIDiff = 'medium';
+
+      document.querySelectorAll('.ai-count-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectedAICount = Number(btn.getAttribute('data-count'));
+          document.querySelectorAll('.ai-count-btn').forEach((b) => {
+            const active = b === btn;
+            b.className = `ai-count-btn py-3 rounded-xl border-2 font-bold ${
+              active ? 'border-emerald-400 bg-emerald-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
+            }`;
+          });
+        });
+      });
+
+      const diffDescriptions = {
+        easy: 'Easy: Makes basic deductions from visible tiles and SORT clues.',
+        medium: 'Medium: Tracks visible tiles, SORT bounds, and COMPARE dot counts methodically.',
+        hard: 'Hard: Uses full constraint propagation across adjacent slots and dot parity.'
+      };
+
+      document.querySelectorAll('.ai-diff-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectedAIDiff = btn.getAttribute('data-diff');
+          document.getElementById('ai-diff-desc').textContent = diffDescriptions[selectedAIDiff];
+          document.querySelectorAll('.ai-diff-btn').forEach((b) => {
+            const active = b === btn;
+            b.className = `ai-diff-btn py-3 rounded-xl border-2 font-bold ${
+              active ? 'border-emerald-400 bg-emerald-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
+            }`;
+          });
+        });
+      });
+
+      document.getElementById('btn-start-ai-game').addEventListener('click', () => {
+        const humanName = document.getElementById('ai-human-name').value.trim() || 'You';
+        const botNames = ['Bot Ada', 'Bot Turing', 'Bot Pascal'];
+        const players = [{ id: 'p0', name: humanName, isAI: false }];
+        for (let i = 0; i < selectedAICount; i++) {
+          players.push({ id: `ai${i + 1}`, name: botNames[i], isAI: true, difficulty: selectedAIDiff });
+        }
+        myLocalPlayerId = 'p0';
+        gameState = buildNewMatchState('ai', players, selectedAIDiff);
+        saveLocalMatch(gameState);
+        showScreen('screen-game');
+        renderGameScreen();
+        scheduleAITurnIfNeeded();
+      });
+
+      // Offline Pass & Play Setup Controls
+      let selectedOfflineCount = 2;
+
+      function renderOfflineNameInputs(count) {
+        selectedOfflineCount = count;
+        const container = document.getElementById('offline-player-names');
+        container.innerHTML = Array.from({ length: count }, (_, i) => `
+          <div>
+            <label class="block text-xs font-bold text-slate-400 mb-1">Player ${i + 1} Name</label>
+            <input type="text" maxlength="16" value="Player ${i + 1}" class="offline-name-input w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-400" />
+          </div>
+        `).join('');
+      }
+
+      document.querySelectorAll('.offline-count-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const cnt = Number(btn.getAttribute('data-count'));
+          document.querySelectorAll('.offline-count-btn').forEach((b) => {
+            const active = b === btn;
+            b.className = `offline-count-btn py-3 rounded-xl border-2 font-bold ${
+              active ? 'border-amber-400 bg-amber-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
+            }`;
+          });
+          renderOfflineNameInputs(cnt);
+        });
+      });
+
+      document.getElementById('btn-start-offline-game').addEventListener('click', () => {
+        const inputs = [...document.querySelectorAll('.offline-name-input')];
+        const players = inputs.map((inp, idx) => ({
+          id: `p${idx}`,
+          name: inp.value.trim() || `Player ${idx + 1}`,
+          isAI: false
+        }));
+        myLocalPlayerId = 'p0';
+        gameState = buildNewMatchState('offline', players);
+        saveLocalMatch(gameState);
+        showScreen('screen-game');
+        renderGameScreen();
+      });
+
+      // Privacy Screen Unlock
+      document.getElementById('btn-privacy-ready').addEventListener('click', () => {
+        if (!gameState) return;
+        gameState.passAndPlayLocked = false;
+        saveLocalMatch(gameState);
+        renderGameScreen();
+      });
+
+      // In-Game Board Actions
+      document.getElementById('btn-draw-tile').addEventListener('click', () => {
+        if (!gameState) return;
+        const viewer = getActiveViewerPlayer();
+        if (gameState.mode === 'online' && !p2pIsHost) {
+          p2pActions.sendCmd({ type: 'DRAW' });
+        } else {
+          performDrawAction(viewer.id);
+        }
+      });
+
+      document.getElementById('btn-action-sort').addEventListener('click', () => {
+        if (!gameState || !selectedClueTileId) return;
+        const viewer = getActiveViewerPlayer();
+        const targetOppId = document.getElementById('select-target-opponent').value;
+        if (gameState.mode === 'online' && !p2pIsHost) {
+          p2pActions.sendCmd({ type: 'SORT', targetOpponentId: targetOppId, clueTileId: selectedClueTileId });
+          selectedClueTileId = null;
+        } else {
+          performSortAction(viewer.id, targetOppId, selectedClueTileId);
+        }
+      });
+
+      document.getElementById('btn-action-compare').addEventListener('click', () => {
+        if (!selectedClueTileId) return;
+        compareModeActive = !compareModeActive;
+        renderGameScreen();
+      });
+
+      // Notebook Controls
+      document.getElementById('btn-notebook-auto-sync').addEventListener('click', () => {
+        if (!gameState) return;
+        const viewer = getActiveViewerPlayer();
+        const nb = getActiveNotebookData(viewer);
+        const visibleNums = new Set(nb.crossed);
+
+        gameState.faceUpPool.forEach((t) => visibleNums.add(t.number));
+        gameState.players.forEach((p) => {
+          if (p.id !== viewer.id) {
+            p.secretTiles.forEach((t) => visibleNums.add(t.number));
+          }
+          p.sortGaps.forEach((g) => g.forEach((t) => visibleNums.add(t.number)));
+          p.compareClues.forEach((cList) => cList.forEach((c) => visibleNums.add(c.tile.number)));
+        });
+
+        nb.crossed = [...visibleNums];
+        if (gameState.mode !== 'online') saveLocalMatch(gameState);
+        renderPrivateNotebook(viewer);
+        showToast('Marked all visible board tiles in your notebook!', 'success');
+      });
+
+      document.querySelectorAll('.est-input').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          if (!gameState) return;
+          const viewer = getActiveViewerPlayer();
+          const nb = getActiveNotebookData(viewer);
+          const idx = Number(inp.getAttribute('data-est'));
+          nb.estimates[idx] = inp.value;
+          if (gameState.mode !== 'online') saveLocalMatch(gameState);
+        });
+      });
+
+      document.getElementById('btn-copy-est-to-guess').addEventListener('click', () => {
+        openGuessModal(true);
+      });
+
+      // Final Guess Modal
+      function openGuessModal(prefillFromNotebook = false) {
+        if (!gameState) return;
+        const viewer = getActiveViewerPlayer();
+        const nb = getActiveNotebookData(viewer);
+        document.getElementById('guess-feedback-box').classList.add('hidden');
+
+        document.getElementById('guess-slot-color-hints').innerHTML = viewer.secretTiles
+          .map(
+            (t, idx) => `
+            <div class="py-1.5 rounded-lg tile-${t.color} text-white shadow">
+              #${idx + 1} ${t.color}
+            </div>`
+          )
+          .join('');
+
+        const inputs = [...document.querySelectorAll('.final-guess-input')];
+        inputs.forEach((inp, idx) => {
+          inp.value = prefillFromNotebook && nb.estimates[idx] ? nb.estimates[idx] : '';
+        });
+
+        document.getElementById('modal-guess').classList.remove('hidden');
+      }
+
+      document.getElementById('btn-open-guess-modal').addEventListener('click', () => openGuessModal(false));
+      document.getElementById('btn-close-guess').addEventListener('click', () => {
+        document.getElementById('modal-guess').classList.add('hidden');
+      });
+      document.getElementById('btn-cancel-guess').addEventListener('click', () => {
+        document.getElementById('modal-guess').classList.add('hidden');
+      });
+
+      document.getElementById('btn-submit-guess').addEventListener('click', () => {
+        if (!gameState) return;
+        const viewer = getActiveViewerPlayer();
+        const nums = [...document.querySelectorAll('.final-guess-input')].map((inp) => parseInt(inp.value, 10));
+
+        if (gameState.mode === 'online' && !p2pIsHost) {
+          p2pActions.sendCmd({ type: 'GUESS', numbers: nums });
+        } else {
+          const res = evaluateFinalGuess(viewer.id, nums);
+          handleGuessModalResponse(res);
+        }
+      });
+
+      document.getElementById('btn-winner-home').addEventListener('click', () => {
+        document.getElementById('modal-winner').classList.add('hidden');
+        cleanupP2PRoom();
+        gameState = null;
+        checkResumeBanner();
+        showScreen('screen-menu');
+      });
+
+      // Resume Saved Offline Game
+      document.getElementById('btn-resume-saved').addEventListener('click', async () => {
+        const saved = await loadLocalMatch();
+        if (!saved) return;
+        gameState = saved;
+        myLocalPlayerId = saved.mode === 'offline' ? saved.players[saved.currentTurnIdx].id : 'p0';
+        showScreen('screen-game');
+        renderGameScreen();
+        scheduleAITurnIfNeeded();
+      });
+
+      document.getElementById('btn-discard-saved').addEventListener('click', async () => {
+        await clearLocalMatch();
+        document.getElementById('resume-banner').classList.add('hidden');
+        showToast('Saved match discarded.', 'info');
+      });
+
+      window.addEventListener('online', updateNetworkIndicator);
+      window.addEventListener('offline', updateNetworkIndicator);
+    }
+
+    async function checkResumeBanner() {
+      const saved = await loadLocalMatch();
+      const banner = document.getElementById('resume-banner');
+      if (saved && !saved.winnerId) {
+        const modeLabel = saved.mode === 'ai' ? 'Solo vs AI' : 'Offline Pass & Play';
+        document.getElementById('resume-details').textContent = `${modeLabel} • ${saved.players.length} Players`;
+        banner.classList.remove('hidden');
+      } else {
+        banner.classList.add('hidden');
+      }
+    }
+
+    // Boot Application
+    initEventListeners();
+    updateNetworkIndicator();
+    checkResumeBanner();
+  </script>
+</body>
+</html>
