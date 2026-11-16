@@ -326,8 +326,6 @@
           </div>
           <p class="text-xs text-slate-400 mt-2">Share this code with friends to connect peer-to-peer (2–4 players).</p>
         </div>
-          <p class="text-xs text-slate-400 mt-2">Share this code with friends to join (2–4 players).</p>
-        </div>
 
         <div>
           <div class="flex items-center justify-between mb-2">
@@ -744,90 +742,47 @@
   </main>
 
   <!-- ==================== JAVASCRIPT APPLICATION LOGIC ==================== -->
-  <script type="module">
-    import { joinRoom } from "https://esm.run/trystero/nostr";
-
+  <script>
     // =========================================================================
-    // 1. PWA MANIFEST & SERVICE WORKER REGISTRATION
+    // 1. GLOBAL STATE, CONSTANTS & TILE ENGINE
     // =========================================================================
-    const manifestObj = {
-      name: "GOT FIVE! – Digital Board Game",
-      short_name: "GOT FIVE!",
-      start_url: "./",
-      display: "standalone",
-      background_color: "#0f172a",
-      theme_color: "#1e1b4b",
-      icons: [
-        {
-          src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%234f46e5'/%3E%3Ctext x='50' y='68' font-size='52' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='%23fde047'%3E5!%3C/text%3E%3C/svg%3E",
-          sizes: "192x192",
-          type: "image/svg+xml"
-        }
+    const COLORS = ['Red', 'Blue', 'Green', 'Yellow', 'Purple'];
+    const P2P_APP_ID = 'got-five-blue-orange-p2p-v1';
+    const RTC_ICE_CONFIG = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
       ]
     };
 
-    try {
-      const manifestBlob = new Blob([JSON.stringify(manifestObj)], { type: 'application/manifest+json' });
-      const manifestLink = document.createElement('link');
-      manifestLink.rel = 'manifest';
-      manifestLink.href = URL.createObjectURL(manifestBlob);
-      document.head.appendChild(manifestLink);
-    } catch (e) {
-      console.warn("Manifest blob skipped:", e);
-    }
+    let currentMode = null; // 'online' | 'ai' | 'offline'
+    let gameState = null;   // Active sanitized game state for rendering
+    let myLocalPlayerId = 'p0';
+    let selectedClueTileId = null;
+    let pendingCompareMode = false;
 
-    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-      const swCode = `
-        const CACHE_NAME = 'got-five-v4';
-        self.addEventListener('install', (e) => {
-          self.skipWaiting();
-          e.waitUntil(
-            caches.open(CACHE_NAME).then((cache) => cache.addAll(['./', location.href]).catch(() => {}))
-          );
-        });
-        self.addEventListener('activate', (e) => {
-          e.waitUntil(
-            caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
-          );
-          self.clients.claim();
-        });
-        self.addEventListener('fetch', (e) => {
-          if (e.request.method !== 'GET') return;
-          e.respondWith(
-            fetch(e.request)
-              .then((res) => {
-                const clone = res.clone();
-                caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone)).catch(() => {});
-                return res;
-              })
-              .catch(() => caches.match(e.request))
-          );
-        });
-      `;
-      try {
-        const swBlob = new Blob([swCode], { type: 'application/javascript' });
-        navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(() => {});
-      } catch (e) {
-        console.warn("Service worker skipped:", e);
-      }
-    }
+    // Setup selections
+    let selectedAiCount = 1;
+    let selectedAiDiff = 'medium';
+    let selectedOfflineCount = 2;
 
-    // =========================================================================
-    // 2. TILE DECK DEFINITION (60 UNIQUE TILES: 5 COLORS x 12 NUMBERS)
-    // =========================================================================
-    const COLORS = ['Red', 'Blue', 'Green', 'Yellow', 'Purple'];
+    // P2P Online Multiplayer State (Host acts as authoritative referee in closure)
+    let p2pRoom = null;
+    let p2pActions = null;
+    let p2pIsHost = false;
+    let p2pRoomCode = '';
+    let p2pLobbyPlayers = [];
+    let hostAuthoritative = null; // Holds full unredacted state ONLY on host's memory
+    let localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
 
-    /**
-     * Generates the official 60-tile set.
-     * Each color owns 12 distinct numbers across 1..60, with 1, 2, or 3 dots.
-     */
+    // Build complete 60-tile deck (1..60, 12 per color, 1-3 dots)
     function createFullDeck() {
       const deck = [];
       for (let num = 1; num <= 60; num++) {
-        const colorIndex = (num - 1) % 5;
-        const color = COLORS[colorIndex];
-        const dots = ((num + Math.floor((num - 1) / 5)) % 3) + 1;
-        deck.push({ id: num, number: num, color, dots });
+        const color = COLORS[(num - 1) % 5];
+        // Deterministic dot distribution matching physical GOT FIVE! balance
+        const dots = ((num * 7 + Math.floor((num - 1) / 5)) % 3) + 1;
+        deck.push({ id: `t-${num}`, number: num, color, dots });
       }
       return deck;
     }
@@ -841,22 +796,406 @@
       return copy;
     }
 
-    function renderDots(count) {
-      return '●'.repeat(count);
+    function createEmptyNotebook() {
+      return {
+        crossed: [],
+        estimates: ['', '', '', '', '']
+      };
+    }
+
+    function createInitialMatchState(mode, playerSpecs, aiDiff = 'medium') {
+      const fullDeck = createFullDeck();
+      const byColor = {};
+      COLORS.forEach(c => {
+        byColor[c] = shuffleArray(fullDeck.filter(t => t.color === c));
+      });
+
+      const usedIds = new Set();
+      const players = playerSpecs.map((spec, idx) => {
+        const secretTiles = [];
+        COLORS.forEach(c => {
+          const picked = byColor[c].pop();
+          secretTiles.push(picked);
+          usedIds.add(picked.id);
+        });
+        // Arrange secret tiles in strictly ascending order
+        secretTiles.sort((a, b) => a.number - b.number);
+
+        return {
+          id: spec.id || `p${idx}`,
+          name: spec.name,
+          isAI: !!spec.isAI,
+          aiDiff: spec.aiDiff || aiDiff,
+          secretTiles,
+          // 6 sort buckets: index 0 (< slot 0), 1 (between 0 & 1), ..., 5 (> slot 4)
+          sortClues: [[], [], [], [], [], []],
+          // 5 compare buckets corresponding to slots 0..4: { tile, match: boolean }
+          compareClues: [[], [], [], [], []],
+          notebook: createEmptyNotebook(),
+          aiMemory: spec.isAI ? initAIMemory(secretTiles, spec.aiDiff || aiDiff) : null
+        };
+      });
+
+      const remaining = shuffleArray(fullDeck.filter(t => !usedIds.has(t.id)));
+      const faceUpPool = remaining.splice(0, 5);
+      const drawPile = remaining;
+
+      return {
+        mode,
+        status: 'playing',
+        turnIndex: 0,
+        turnStep: 'draw', // 'draw' | 'clue'
+        lastDrawnTile: null,
+        faceUpPool,
+        drawPile,
+        players,
+        logs: [`Match started with ${players.length} players! 5 clue cards placed face-up.`],
+        winnerId: null
+      };
     }
 
     // =========================================================================
-    // 3. LOCAL PERSISTENCE (IndexedDB + localStorage fallback)
+    // 2. FAIR NON-CHEATING AI DEDUCTION ENGINE
     // =========================================================================
-    const DB_NAME = 'GotFiveOfflineDB';
-    const STORE_NAME = 'savedMatches';
+    function initAIMemory(secretTiles, diff) {
+      // AI ONLY knows the colors of its 5 secret slots (never the numbers!)
+      const slotColors = secretTiles.map(t => t.color);
+      const candidates = slotColors.map(color => {
+        const nums = [];
+        for (let n = 1; n <= 60; n++) {
+          if (COLORS[(n - 1) % 5] === color) nums.push(n);
+        }
+        return nums;
+      });
+      return {
+        diff,
+        slotColors,
+        candidates,
+        minBounds: [1, 1, 1, 1, 1],
+        maxBounds: [60, 60, 60, 60, 60],
+        requiredDots: [null, null, null, null, null],
+        forbiddenDots: [[], [], [], [], []]
+      };
+    }
+
+    function updateAIDeductions(state, aiPlayer) {
+      const mem = aiPlayer.aiMemory;
+      if (!mem) return;
+
+      const fullDeck = createFullDeck();
+      const tileLookup = {};
+      fullDeck.forEach(t => { tileLookup[t.number] = t; });
+
+      // 1. Collect all publicly visible tile numbers (opponents' racks + face-up pool + placed clues)
+      const visibleNumbers = new Set();
+      state.faceUpPool.forEach(t => visibleNumbers.add(t.number));
+      state.players.forEach(p => {
+        if (p.id !== aiPlayer.id) {
+          p.secretTiles.forEach(t => visibleNumbers.add(t.number));
+        }
+        p.sortClues.forEach(bucket => bucket.forEach(t => visibleNumbers.add(t.number)));
+        p.compareClues.forEach(bucket => bucket.forEach(c => visibleNumbers.add(c.tile.number)));
+      });
+
+      // 2. Apply SORT bounds from AI's own received SORT clues
+      for (let pos = 0; pos <= 5; pos++) {
+        aiPlayer.sortClues[pos].forEach(t => {
+          // Clue tile placed at gap `pos` means slots < pos are < t.number, and slots >= pos are > t.number
+          for (let s = 0; s < pos; s++) {
+            mem.maxBounds[s] = Math.min(mem.maxBounds[s], t.number - 1);
+          }
+          for (let s = pos; s < 5; s++) {
+            mem.minBounds[s] = Math.max(mem.minBounds[s], t.number + 1);
+          }
+        });
+      }
+
+      // 3. Apply COMPARE dot constraints
+      for (let s = 0; s < 5; s++) {
+        aiPlayer.compareClues[s].forEach(c => {
+          if (c.match) {
+            mem.requiredDots[s] = c.tile.dots;
+          } else if (!mem.forbiddenDots[s].includes(c.tile.dots)) {
+            mem.forbiddenDots[s].push(c.tile.dots);
+          }
+        });
+      }
+
+      // 4. Filter candidate numbers per slot
+      for (let s = 0; s < 5; s++) {
+        mem.candidates[s] = mem.candidates[s].filter(num => {
+          if (visibleNumbers.has(num)) return false;
+          if (num < mem.minBounds[s] || num > mem.maxBounds[s]) return false;
+          const t = tileLookup[num];
+          if (mem.diff !== 'easy') {
+            if (mem.requiredDots[s] !== null && t.dots !== mem.requiredDots[s]) return false;
+            if (mem.forbiddenDots[s].includes(t.dots)) return false;
+          }
+          return true;
+        });
+      }
+
+      // 5. Propagate strict ascending order across slots (Medium & Hard)
+      if (mem.diff === 'medium' || mem.diff === 'hard') {
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (let s = 0; s < 4; s++) {
+            if (mem.candidates[s].length > 0 && mem.candidates[s + 1].length > 0) {
+              const minCurr = mem.candidates[s][0];
+              const maxNext = mem.candidates[s + 1][mem.candidates[s + 1].length - 1];
+              const filteredNext = mem.candidates[s + 1].filter(n => n > minCurr);
+              if (filteredNext.length !== mem.candidates[s + 1].length && filteredNext.length > 0) {
+                mem.candidates[s + 1] = filteredNext;
+                changed = true;
+              }
+              const filteredCurr = mem.candidates[s].filter(n => n < maxNext);
+              if (filteredCurr.length !== mem.candidates[s].length && filteredCurr.length > 0) {
+                mem.candidates[s] = filteredCurr;
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    function runAITurnIfNeeded() {
+      if (!gameState || gameState.status !== 'playing') return;
+      const activePlayer = gameState.players[gameState.turnIndex];
+      if (!activePlayer || !activePlayer.isAI) return;
+
+      setTimeout(() => {
+        if (!gameState || gameState.status !== 'playing') return;
+        const bot = gameState.players[gameState.turnIndex];
+        if (!bot || !bot.isAI) return;
+
+        // Step 1: Draw tile
+        if (gameState.turnStep === 'draw') {
+          performDrawAction(gameState);
+          renderGameBoard();
+          if (currentMode === 'offline') saveOfflineGameState(gameState);
+          runAITurnIfNeeded();
+          return;
+        }
+
+        // Step 2: Update deductions & check if bot is ready to call GOT FIVE!
+        updateAIDeductions(gameState, bot);
+        const mem = bot.aiMemory;
+        const guessThreshold = mem.diff === 'hard' ? 1 : (mem.diff === 'medium' ? 2 : 1);
+        const allNarrowed = mem.candidates.every(c => c.length > 0 && c.length <= guessThreshold);
+
+        if (allNarrowed && mem.candidates.every(c => c.length === 1)) {
+          const guess = mem.candidates.map(c => c[0]);
+          const isAsc = guess.every((v, i) => i === 0 || v > guess[i - 1]);
+          if (isAsc) {
+            const won = evaluateFinalGuess(gameState, bot.id, guess);
+            renderGameBoard();
+            if (won) return;
+          }
+        }
+
+        // Step 3: Pick an available face-up tile and request SORT or COMPARE
+        if (gameState.faceUpPool.length === 0) {
+          advanceTurn(gameState);
+          renderGameBoard();
+          return;
+        }
+
+        const opponents = gameState.players.filter(p => p.id !== bot.id);
+        const targetOpp = opponents[Math.floor(Math.random() * opponents.length)];
+
+        // Choose clue tile strategically (Hard picks numbers near middle of remaining uncertainty)
+        let chosenTile = gameState.faceUpPool[0];
+        let actionType = 'sort';
+        let compareSlot = 0;
+
+        if (mem.diff === 'hard' || mem.diff === 'medium') {
+          // Find slot with most remaining candidates
+          let widestSlot = 0;
+          let maxLen = 0;
+          mem.candidates.forEach((c, idx) => {
+            if (c.length > maxLen) {
+              maxLen = c.length;
+              widestSlot = idx;
+            }
+          });
+          const slotCands = mem.candidates[widestSlot];
+          const midTarget = slotCands[Math.floor(slotCands.length / 2)] || 30;
+
+          // Find face-up tile closest to midTarget for an informative SORT split
+          let bestDist = 999;
+          gameState.faceUpPool.forEach(t => {
+            const dist = Math.abs(t.number - midTarget);
+            if (dist < bestDist) {
+              bestDist = dist;
+              chosenTile = t;
+            }
+          });
+
+          if (bestDist <= 10 || mem.requiredDots[widestSlot] !== null) {
+            actionType = 'sort';
+          } else {
+            actionType = 'compare';
+            compareSlot = widestSlot;
+          }
+        } else {
+          chosenTile = gameState.faceUpPool[Math.floor(Math.random() * gameState.faceUpPool.length)];
+          actionType = Math.random() < 0.65 ? 'sort' : 'compare';
+          compareSlot = Math.floor(Math.random() * 5);
+        }
+
+        if (actionType === 'sort') {
+          performSortClue(gameState, bot.id, targetOpp.id, chosenTile.id);
+        } else {
+          performCompareClue(gameState, bot.id, targetOpp.id, chosenTile.id, compareSlot);
+        }
+
+        updateAIDeductions(gameState, bot);
+        renderGameBoard();
+        if (currentMode === 'offline') saveOfflineGameState(gameState);
+
+        // Continue if next player is also an AI
+        runAITurnIfNeeded();
+      }, 950);
+    }
+
+    // =========================================================================
+    // 3. CORE GAME RULES & CLUE RESOLUTION
+    // =========================================================================
+    function performDrawAction(state) {
+      if (state.turnStep !== 'draw') return false;
+      const activePlayer = state.players[state.turnIndex];
+
+      if (state.drawPile.length > 0) {
+        const drawn = state.drawPile.pop();
+        state.faceUpPool.push(drawn);
+        state.lastDrawnTile = drawn;
+        state.logs.unshift(`${activePlayer.name} drew #${drawn.number} (${drawn.color}, ${drawn.dots}●) into the clue pool.`);
+      } else {
+        state.lastDrawnTile = null;
+        state.logs.unshift(`${activePlayer.name} passed drawing (draw pile empty).`);
+      }
+      state.turnStep = 'clue';
+      return true;
+    }
+
+    function performSortClue(state, requesterId, targetOppId, clueTileId) {
+      const requester = state.players.find(p => p.id === requesterId);
+      const opponent = state.players.find(p => p.id === targetOppId);
+      const tileIdx = state.faceUpPool.findIndex(t => t.id === clueTileId);
+      if (!requester || !opponent || tileIdx === -1) return false;
+
+      const [clueTile] = state.faceUpPool.splice(tileIdx, 1);
+
+      // Determine exact ascending position (0..5) relative to requester's 5 secret numbers
+      let pos = 0;
+      while (pos < 5 && clueTile.number > requester.secretTiles[pos].number) {
+        pos++;
+      }
+      requester.sortClues[pos].push(clueTile);
+      requester.sortClues[pos].sort((a, b) => a.number - b.number);
+
+      const posLabel = pos === 0
+        ? `before Slot #1 (< ${clueTile.number})`
+        : pos === 5
+          ? `after Slot #5 (> ${clueTile.number})`
+          : `between Slot #${pos} and Slot #${pos + 1}`;
+
+      state.logs.unshift(`↕️ SORT: ${requester.name} gave #${clueTile.number} (${clueTile.color}) to ${opponent.name} → placed ${posLabel}.`);
+      advanceTurn(state);
+      return true;
+    }
+
+    function performCompareClue(state, requesterId, targetOppId, clueTileId, slotIndex) {
+      const requester = state.players.find(p => p.id === requesterId);
+      const opponent = state.players.find(p => p.id === targetOppId);
+      const tileIdx = state.faceUpPool.findIndex(t => t.id === clueTileId);
+      if (!requester || !opponent || tileIdx === -1 || slotIndex < 0 || slotIndex > 4) return false;
+
+      const [clueTile] = state.faceUpPool.splice(tileIdx, 1);
+      const secretSlotTile = requester.secretTiles[slotIndex];
+      const isMatch = clueTile.dots === secretSlotTile.dots;
+
+      requester.compareClues[slotIndex].push({ tile: clueTile, match: isMatch });
+
+      state.logs.unshift(
+        `⚖️ COMPARE: ${requester.name} asked ${opponent.name} if #${clueTile.number} (${clueTile.dots}●) matches Slot #${slotIndex + 1} dots → ${isMatch ? 'YES (Straight)' : 'NO (Angled)'}.`
+      );
+      advanceTurn(state);
+      return true;
+    }
+
+    function advanceTurn(state) {
+      state.turnIndex = (state.turnIndex + 1) % state.players.length;
+      state.turnStep = 'draw';
+      state.lastDrawnTile = null;
+      selectedClueTileId = null;
+      pendingCompareMode = false;
+    }
+
+    function evaluateFinalGuess(state, playerId, numbersArray) {
+      const player = state.players.find(p => p.id === playerId);
+      if (!player || numbersArray.length !== 5) return false;
+
+      const allMatch = player.secretTiles.every((tile, idx) => tile.number === numbersArray[idx]);
+      if (allMatch) {
+        state.status = 'finished';
+        state.winnerId = player.id;
+        state.logs.unshift(`🏆 ${player.name} guessed [${numbersArray.join(', ')}] and WON GOT FIVE!`);
+        return true;
+      } else {
+        state.logs.unshift(`❌ ${player.name} attempted GOT FIVE! — Wrong guess!`);
+        return false;
+      }
+    }
+
+    // =========================================================================
+    // 4. SANITIZATION FOR ONLINE P2P SECURITY (NEVER LEAK OWN SECRET NUMBERS)
+    // =========================================================================
+    function buildRedactedViewForPeer(authState, recipientPlayerId) {
+      return {
+        mode: 'online',
+        status: authState.status,
+        turnIndex: authState.turnIndex,
+        turnStep: authState.turnStep,
+        lastDrawnTile: authState.lastDrawnTile,
+        faceUpPool: authState.faceUpPool,
+        drawPileCount: authState.drawPile.length,
+        logs: authState.logs,
+        winnerId: authState.winnerId,
+        players: authState.players.map(p => {
+          const isRecipient = p.id === recipientPlayerId;
+          const revealAll = authState.status === 'finished';
+          return {
+            id: p.id,
+            name: p.name,
+            isAI: false,
+            secretTiles: p.secretTiles.map(t => ({
+              id: t.id,
+              color: t.color,
+              // Only send numbers & dots if this is an opponent OR the game has finished!
+              number: (!isRecipient || revealAll) ? t.number : null,
+              dots: (!isRecipient || revealAll) ? t.dots : null
+            })),
+            sortClues: p.sortClues,
+            compareClues: p.compareClues
+          };
+        })
+      };
+    }
+
+    // =========================================================================
+    // 5. INDEXEDDB OFFLINE PERSISTENCE
+    // =========================================================================
+    const DB_NAME = 'got-five-offline-db';
+    const STORE_NAME = 'saved_games';
 
     function openLocalDB() {
       return new Promise((resolve, reject) => {
-        if (!window.indexedDB) return reject(new Error('No IndexedDB'));
         const req = indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = () => {
-          const db = req.result;
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
           if (!db.objectStoreNames.contains(STORE_NAME)) {
             db.createObjectStore(STORE_NAME);
           }
@@ -866,483 +1205,40 @@
       });
     }
 
-    async function saveLocalMatch(stateObj) {
-      if (!stateObj || stateObj.mode === 'online' || stateObj.winnerId) return;
+    async function saveOfflineGameState(stateObj) {
       try {
         const db = await openLocalDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).put(JSON.stringify(stateObj), 'activeMatch');
+        tx.objectStore(STORE_NAME).put(JSON.parse(JSON.stringify(stateObj)), 'active_match');
       } catch (e) {
-        try {
-          localStorage.setItem('gotfive_saved_match', JSON.stringify(stateObj));
-        } catch (_) {}
+        console.warn('IndexedDB save failed:', e);
       }
     }
 
-    async function loadLocalMatch() {
+    async function loadOfflineGameState() {
       try {
         const db = await openLocalDB();
-        return await new Promise((resolve) => {
+        return new Promise((resolve) => {
           const tx = db.transaction(STORE_NAME, 'readonly');
-          const req = tx.objectStore(STORE_NAME).get('activeMatch');
-          req.onsuccess = () => resolve(req.result ? JSON.parse(req.result) : null);
+          const req = tx.objectStore(STORE_NAME).get('active_match');
+          req.onsuccess = () => resolve(req.result || null);
           req.onerror = () => resolve(null);
         });
       } catch (e) {
-        try {
-          const raw = localStorage.getItem('gotfive_saved_match');
-          return raw ? JSON.parse(raw) : null;
-        } catch (_) {
-          return null;
-        }
+        return null;
       }
     }
 
-    async function clearLocalMatch() {
+    async function clearOfflineGameState() {
       try {
         const db = await openLocalDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).delete('activeMatch');
-      } catch (_) {}
-      try {
-        localStorage.removeItem('gotfive_saved_match');
-      } catch (_) {}
+        tx.objectStore(STORE_NAME).delete('active_match');
+      } catch (e) {}
     }
 
     // =========================================================================
-    // 4. CORE GAME STATE & REFEREE ENGINE
-    // =========================================================================
-    let gameState = null;       // Client/Active view state
-    let hostAuthoritative = null; // Full unredacted state held ONLY by room host in Online P2P
-    let myLocalPlayerId = 'p0';
-    let selectedClueTileId = null;
-    let compareModeActive = false;
-    let aiTurnTimer = null;
-
-    // Online P2P variables
-    const P2P_APP_ID = 'got-five-blue-orange-p2p-v1';
-    const RTC_ICE_CONFIG = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    };
-    let p2pRoom = null;
-    let p2pIsHost = false;
-    let p2pRoomCode = '';
-    let p2pLobbyPlayers = []; // [{ id, name, isHost }]
-    let p2pActions = null;
-    let localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
-
-    /**
-     * Initializes a brand new match with valid 60-tile distribution:
-     * - Each player receives 5 secret tiles (one of each color) sorted ascending.
-     * - 5 random tiles placed face-up in the common clue pool.
-     * - Remaining tiles stay in face-down draw pile.
-     */
-    function buildNewMatchState(mode, playersList, difficulty = 'medium', roomCode = null) {
-      const fullDeck = shuffleArray(createFullDeck());
-      const players = playersList.map((p, idx) => {
-        const hand = [];
-        for (const color of COLORS) {
-          const tileIdx = fullDeck.findIndex((t) => t.color === color);
-          hand.push(fullDeck.splice(tileIdx, 1)[0]);
-        }
-        hand.sort((a, b) => a.number - b.number);
-
-        return {
-          id: p.id || `p${idx}`,
-          name: p.name,
-          isAI: Boolean(p.isAI),
-          difficulty: p.difficulty || difficulty,
-          secretTiles: hand,
-          sortGaps: [[], [], [], [], [], []],   // 6 positions around the 5 secret tiles
-          compareClues: [[], [], [], [], []],   // Compared tiles attached to each of the 5 slots
-          notebook: {
-            crossed: [],
-            estimates: ['', '', '', '', '']
-          },
-          aiMemory: p.isAI ? initAIMemory(hand) : null
-        };
-      });
-
-      const faceUpPool = fullDeck.splice(0, 5);
-      const drawPile = fullDeck;
-
-      return {
-        mode, // 'ai' | 'offline' | 'online'
-        roomCode,
-        players,
-        currentTurnIdx: 0,
-        turnStep: 'DRAW', // 'DRAW' | 'CLUE'
-        drawPile,
-        faceUpPool,
-        lastDrawnTile: null,
-        logs: [`Game started with ${players.length} players. 5 face-up clue cards placed.`],
-        winnerId: null,
-        passAndPlayLocked: mode === 'offline'
-      };
-    }
-
-    /**
-     * Creates a filtered view of the authoritative state for a specific online peer
-     * so NO player's browser ever receives their own hidden tile numbers.
-     */
-    function createRedactedViewForPlayer(authState, viewerId) {
-      return {
-        ...authState,
-        drawPileCount: authState.drawPile.length,
-        drawPile: [], // Never expose draw pile order
-        players: authState.players.map((pl) => {
-          const isViewer = pl.id === viewerId;
-          return {
-            id: pl.id,
-            name: pl.name,
-            isAI: false,
-            sortGaps: pl.sortGaps,
-            compareClues: pl.compareClues,
-            secretTiles: pl.secretTiles.map((t) =>
-              isViewer
-                ? { id: null, number: null, color: t.color, dots: null }
-                : { id: t.id, number: t.number, color: t.color, dots: t.dots }
-            )
-          };
-        })
-      };
-    }
-
-    // =========================================================================
-    // 5. FAIR NON-CHEATING AI ENGINE (EASY / MEDIUM / HARD)
-    // =========================================================================
-    function initAIMemory(ownHand) {
-      // AI tracks possible candidate numbers (1..60) for each of its 5 slots
-      // using ONLY its own slot colors (publicly visible on its card backs).
-      const full = createFullDeck();
-      const candidates = ownHand.map((slotTile) =>
-        full.filter((t) => t.color === slotTile.color).map((t) => t.number)
-      );
-      return { candidates };
-    }
-
-    function updateAIDeductions(state, aiPlayer) {
-      if (!aiPlayer.aiMemory) return;
-      const fullDeck = createFullDeck();
-      const tileByNum = Object.fromEntries(fullDeck.map((t) => [t.number, t]));
-
-      // 1. Gather all publicly visible tiles (opponents' hands, face-up pool, all sortGaps, all compareClues)
-      const knownImpossible = new Set();
-      state.faceUpPool.forEach((t) => knownImpossible.add(t.number));
-      state.players.forEach((p) => {
-        if (p.id !== aiPlayer.id) {
-          p.secretTiles.forEach((t) => knownImpossible.add(t.number));
-        }
-        p.sortGaps.forEach((gap) => gap.forEach((t) => knownImpossible.add(t.number)));
-        p.compareClues.forEach((list) => list.forEach((c) => knownImpossible.add(c.tile.number)));
-      });
-
-      // 2. Apply SORT bounds for AI's own rack
-      const lowerBounds = [0, 0, 0, 0, 0];
-      const upperBounds = [61, 61, 61, 61, 61];
-
-      for (let gapIdx = 0; gapIdx < 6; gapIdx++) {
-        for (const t of aiPlayer.sortGaps[gapIdx]) {
-          // Tiles in gapIdx are > slots 0..(gapIdx-1) and < slots gapIdx..4
-          for (let s = 0; s < gapIdx; s++) {
-            upperBounds[s] = Math.min(upperBounds[s], t.number - 1);
-          }
-          for (let s = gapIdx; s < 5; s++) {
-            lowerBounds[s] = Math.max(lowerBounds[s], t.number + 1);
-          }
-        }
-      }
-
-      // 3. Apply COMPARE dot constraints & filter candidates
-      for (let s = 0; s < 5; s++) {
-        const slotColor = aiPlayer.secretTiles[s].color;
-        let valid = aiPlayer.aiMemory.candidates[s].filter((num) => {
-          if (knownImpossible.has(num)) return false;
-          if (num < lowerBounds[s] || num > upperBounds[s]) return false;
-
-          if (aiPlayer.difficulty !== 'easy') {
-            for (const comp of aiPlayer.compareClues[s]) {
-              const candDots = tileByNum[num].dots;
-              if (comp.sameDots && candDots !== comp.tile.dots) return false;
-              if (!comp.sameDots && candDots === comp.tile.dots) return false;
-            }
-          }
-          return true;
-        });
-
-        if (valid.length === 0) {
-          // Fallback safety
-          valid = fullDeck.filter((t) => t.color === slotColor && !knownImpossible.has(t.number)).map((t) => t.number);
-        }
-        aiPlayer.aiMemory.candidates[s] = valid;
-      }
-
-      // 4. Hard AI propagates strict ascending order across adjacent slots iteratively
-      if (aiPlayer.difficulty === 'hard') {
-        let changed = true;
-        while (changed) {
-          changed = false;
-          for (let s = 0; s < 4; s++) {
-            const minCurrent = Math.min(...aiPlayer.aiMemory.candidates[s]);
-            const filteredNext = aiPlayer.aiMemory.candidates[s + 1].filter((n) => n > minCurrent);
-            if (filteredNext.length > 0 && filteredNext.length < aiPlayer.aiMemory.candidates[s + 1].length) {
-              aiPlayer.aiMemory.candidates[s + 1] = filteredNext;
-              changed = true;
-            }
-          }
-          for (let s = 4; s > 0; s--) {
-            const maxCurrent = Math.max(...aiPlayer.aiMemory.candidates[s]);
-            const filteredPrev = aiPlayer.aiMemory.candidates[s - 1].filter((n) => n < maxCurrent);
-            if (filteredPrev.length > 0 && filteredPrev.length < aiPlayer.aiMemory.candidates[s - 1].length) {
-              aiPlayer.aiMemory.candidates[s - 1] = filteredPrev;
-              changed = true;
-            }
-          }
-        }
-      }
-    }
-
-    function scheduleAITurnIfNeeded() {
-      clearTimeout(aiTurnTimer);
-      if (!gameState || gameState.winnerId || gameState.mode !== 'ai') return;
-      const activePlayer = gameState.players[gameState.currentTurnIdx];
-      if (!activePlayer || !activePlayer.isAI) return;
-
-      aiTurnTimer = setTimeout(() => {
-        runAITurnStep(activePlayer);
-      }, 950);
-    }
-
-    function runAITurnStep(aiPlayer) {
-      if (!gameState || gameState.winnerId) return;
-      updateAIDeductions(gameState, aiPlayer);
-
-      // Check if AI is confident enough to declare GOT FIVE!
-      const cands = aiPlayer.aiMemory.candidates;
-      const confidenceThreshold = aiPlayer.difficulty === 'easy' ? 1 : aiPlayer.difficulty === 'medium' ? 1 : 2;
-      const maxRemaining = Math.max(...cands.map((c) => c.length));
-
-      if (maxRemaining <= confidenceThreshold) {
-        const guess = cands.map((c) => c[Math.floor(Math.random() * c.length)]);
-        const isAscending = guess.every((v, i) => i === 0 || v > guess[i - 1]);
-        if (isAscending) {
-          const isExact = guess.every((v, i) => v === aiPlayer.secretTiles[i].number);
-          if (isExact) {
-            gameState.winnerId = aiPlayer.id;
-            gameState.logs.unshift(`🏆 ${aiPlayer.name} declared GOT FIVE! (${guess.join(', ')}) and WON!`);
-            renderGameScreen();
-            return;
-          } else {
-            gameState.logs.unshift(`❌ ${aiPlayer.name} attempted GOT FIVE! — Wrong guess!`);
-          }
-        }
-      }
-
-      // Step 1: Draw a tile
-      if (gameState.turnStep === 'DRAW') {
-        performDrawAction(aiPlayer.id);
-        aiTurnTimer = setTimeout(() => runAITurnStep(aiPlayer), 900);
-        return;
-      }
-
-      // Step 2: Select an available face-up clue tile and request SORT or COMPARE
-      if (gameState.turnStep === 'CLUE' && gameState.faceUpPool.length > 0) {
-        const opponents = gameState.players.filter((p) => p.id !== aiPlayer.id);
-        const targetOpp = opponents[Math.floor(Math.random() * opponents.length)];
-
-        // Find slot with most remaining uncertainty
-        let uncertainSlot = 0;
-        let maxLen = 0;
-        cands.forEach((c, idx) => {
-          if (c.length > maxLen) {
-            maxLen = c.length;
-            uncertainSlot = idx;
-          }
-        });
-
-        let chosenTile = gameState.faceUpPool[0];
-        if (aiPlayer.difficulty !== 'easy') {
-          // Pick a face-up tile closest to the median of the uncertain slot
-          const mid = cands[uncertainSlot][Math.floor(cands[uncertainSlot].length / 2)];
-          chosenTile = [...gameState.faceUpPool].sort(
-            (a, b) => Math.abs(a.number - mid) - Math.abs(b.number - mid)
-          )[0];
-        } else {
-          chosenTile = gameState.faceUpPool[Math.floor(Math.random() * gameState.faceUpPool.length)];
-        }
-
-        const useCompare = aiPlayer.difficulty !== 'easy' && Math.random() < 0.35 && aiPlayer.compareClues[uncertainSlot].length < 2;
-        if (useCompare) {
-          performCompareAction(aiPlayer.id, targetOpp.id, chosenTile.id, uncertainSlot);
-        } else {
-          performSortAction(aiPlayer.id, targetOpp.id, chosenTile.id);
-        }
-      }
-    }
-
-    // =========================================================================
-    // 6. GAMEPLAY ACTIONS (DRAW, SORT, COMPARE, FINAL GUESS)
-    // =========================================================================
-    function getAuthoritativeState() {
-      return gameState && gameState.mode === 'online' ? hostAuthoritative : gameState;
-    }
-
-    function performDrawAction(playerId) {
-      const state = getAuthoritativeState();
-      if (!state || state.winnerId) return;
-      const activePlayer = state.players[state.currentTurnIdx];
-      if (activePlayer.id !== playerId || state.turnStep !== 'DRAW') return;
-
-      if (state.drawPile.length === 0) {
-        state.turnStep = 'CLUE';
-        state.logs.unshift(`⚠️ Draw pile is empty! ${activePlayer.name} must pick from the face-up clue pool.`);
-      } else {
-        const drawn = state.drawPile.shift();
-        state.faceUpPool.push(drawn);
-        state.lastDrawnTile = drawn;
-        state.turnStep = 'CLUE';
-        state.logs.unshift(`🎴 ${activePlayer.name} drew #${drawn.number} (${drawn.color}, ${renderDots(drawn.dots)}) into the clue pool.`);
-      }
-
-      selectedClueTileId = null;
-      compareModeActive = false;
-      syncAndRenderAfterAction();
-    }
-
-    function performSortAction(playerId, targetOpponentId, clueTileId) {
-      const state = getAuthoritativeState();
-      if (!state || state.winnerId) return;
-      const activePlayer = state.players[state.currentTurnIdx];
-      if (activePlayer.id !== playerId || state.turnStep !== 'CLUE') return;
-
-      const poolIdx = state.faceUpPool.findIndex((t) => t.id === clueTileId);
-      if (poolIdx === -1) {
-        showToast("You can only select an available face-up clue tile!", "error");
-        return;
-      }
-
-      const [clueTile] = state.faceUpPool.splice(poolIdx, 1);
-      // Determine ascending position (0..5) relative to activePlayer's 5 secret tiles
-      let gapIndex = 0;
-      while (gapIndex < 5 && clueTile.number > activePlayer.secretTiles[gapIndex].number) {
-        gapIndex++;
-      }
-
-      activePlayer.sortGaps[gapIndex].push(clueTile);
-      activePlayer.sortGaps[gapIndex].sort((a, b) => a.number - b.number);
-
-      const opp = state.players.find((p) => p.id === targetOpponentId) || state.players[0];
-      const posDesc =
-        gapIndex === 0
-          ? 'before Slot #1 (lowest)'
-          : gapIndex === 5
-          ? 'after Slot #5 (highest)'
-          : `between Slot #${gapIndex} and Slot #${gapIndex + 1}`;
-
-      state.logs.unshift(
-        `↕️ ${activePlayer.name} asked ${opp.name} to SORT #${clueTile.number} (${clueTile.color}) → placed ${posDesc}.`
-      );
-
-      advanceToNextTurn(state);
-    }
-
-    function performCompareAction(playerId, targetOpponentId, clueTileId, slotIndex) {
-      const state = getAuthoritativeState();
-      if (!state || state.winnerId) return;
-      const activePlayer = state.players[state.currentTurnIdx];
-      if (activePlayer.id !== playerId || state.turnStep !== 'CLUE') return;
-      if (slotIndex < 0 || slotIndex > 4) return;
-
-      const poolIdx = state.faceUpPool.findIndex((t) => t.id === clueTileId);
-      if (poolIdx === -1) {
-        showToast("You can only select an available face-up clue tile!", "error");
-        return;
-      }
-
-      const [clueTile] = state.faceUpPool.splice(poolIdx, 1);
-      const secretSlotTile = activePlayer.secretTiles[slotIndex];
-      const sameDots = clueTile.dots === secretSlotTile.dots;
-
-      activePlayer.compareClues[slotIndex].push({
-        tile: clueTile,
-        sameDots
-      });
-
-      const opp = state.players.find((p) => p.id === targetOpponentId) || state.players[0];
-      state.logs.unshift(
-        `⚖️ ${activePlayer.name} asked ${opp.name} to COMPARE #${clueTile.number} (${renderDots(clueTile.dots)}) with Slot #${slotIndex + 1} → ${sameDots ? 'YES (Straight)' : 'NO (Angled)'}.`
-      );
-
-      advanceToNextTurn(state);
-    }
-
-    function evaluateFinalGuess(playerId, guessNumbers) {
-      const state = getAuthoritativeState();
-      if (!state || state.winnerId) return { ok: false, message: 'Game already ended.' };
-
-      const player = state.players.find((p) => p.id === playerId);
-      if (!player) return { ok: false, message: 'Player not found.' };
-
-      if (guessNumbers.length !== 5 || guessNumbers.some((n) => !Number.isInteger(n) || n < 1 || n > 60)) {
-        return { ok: false, message: 'Enter 5 valid numbers between 1 and 60.' };
-      }
-
-      for (let i = 1; i < 5; i++) {
-        if (guessNumbers[i] <= guessNumbers[i - 1]) {
-          return { ok: false, message: 'Numbers must be in strictly ascending order!' };
-        }
-      }
-
-      const isAllMatch = guessNumbers.every((num, idx) => num === player.secretTiles[idx].number);
-      if (isAllMatch) {
-        state.winnerId = player.id;
-        state.logs.unshift(`🏆 ${player.name} declared GOT FIVE! (${guessNumbers.join(', ')}) and WON THE GAME!`);
-        syncAndRenderAfterAction();
-        return { ok: true, won: true };
-      } else {
-        state.logs.unshift(`❌ ${player.name} attempted GOT FIVE! — Wrong guess! Try again.`);
-        syncAndRenderAfterAction();
-        return { ok: true, won: false, message: 'Wrong guess! Try again.' };
-      }
-    }
-
-    function advanceToNextTurn(state) {
-      selectedClueTileId = null;
-      compareModeActive = false;
-      state.turnStep = 'DRAW';
-      state.currentTurnIdx = (state.currentTurnIdx + 1) % state.players.length;
-
-      if (state.mode === 'offline') {
-        myLocalPlayerId = state.players[state.currentTurnIdx].id;
-        state.passAndPlayLocked = true;
-      }
-
-      syncAndRenderAfterAction();
-    }
-
-    function syncAndRenderAfterAction() {
-      if (!gameState) return;
-
-      if (gameState.mode === 'online' && p2pIsHost && hostAuthoritative) {
-        gameState = createRedactedViewForPlayer(hostAuthoritative, myLocalPlayerId);
-        broadcastHostGameState();
-      } else if (gameState.mode !== 'online') {
-        if (gameState.winnerId) {
-          clearLocalMatch();
-        } else {
-          saveLocalMatch(gameState);
-        }
-      }
-
-      renderGameScreen();
-      scheduleAITurnIfNeeded();
-    }
-
-    // =========================================================================
-    // 7. SERVERLESS WEBRTC ONLINE MULTIPLAYER (TRYSTERO)
+    // 6. SERVERLESS WEBRTC ONLINE MULTIPLAYER (TRYSTERO - DYNAMIC IMPORT)
     // =========================================================================
     function generateRoomCode() {
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -1365,7 +1261,7 @@
       hostAuthoritative = null;
     }
 
-    function connectToTrysteroRoom(roomCode, playerName, asHost) {
+    async function connectToTrysteroRoom(roomCode, playerName, asHost) {
       if (!navigator.onLine) {
         showToast("Internet connection required for Online Multiplayer.", "error");
         return;
@@ -1376,8 +1272,19 @@
       p2pRoomCode = roomCode;
       localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
 
+      showToast("Connecting to P2P network...", "info");
+
+      let joinRoomFn;
       try {
-        p2pRoom = joinRoom({ appId: P2P_APP_ID, rtcConfig: RTC_ICE_CONFIG }, roomCode);
+        const mod = await import("https://esm.run/trystero/nostr");
+        joinRoomFn = mod.joinRoom;
+      } catch (err) {
+        showToast("Could not load P2P library. Ensure you are on HTTPS/HTTP and online.", "error");
+        return;
+      }
+
+      try {
+        p2pRoom = joinRoomFn({ appId: P2P_APP_ID, rtcConfig: RTC_ICE_CONFIG }, roomCode);
         myLocalPlayerId = p2pRoom.selfId;
       } catch (err) {
         showToast("Could not initialize WebRTC room. Check browser permissions.", "error");
@@ -1385,105 +1292,174 @@
       }
 
       const [sendLobby, onLobby] = p2pRoom.makeAction('lobby');
-      const [sendHello, onHello] = p2pRoom.makeAction('hello');
-      const [sendState, onState] = p2pRoom.makeAction('state');
-      const [sendCmd, onCmd] = p2pRoom.makeAction('cmd');
+      const [sendJoinReq, onJoinReq] = p2pRoom.makeAction('joinReq');
+      const [sendState, onState] = p2pRoom.makeAction('gameState');
+      const [sendAction, onAction] = p2pRoom.makeAction('playerAct');
       const [sendGuessRes, onGuessRes] = p2pRoom.makeAction('guessRes');
 
-      p2pActions = { sendLobby, sendHello, sendState, sendCmd, sendGuessRes };
+      p2pActions = { sendLobby, sendJoinReq, sendState, sendAction, sendGuessRes };
 
       if (asHost) {
         p2pLobbyPlayers = [{ id: myLocalPlayerId, name: playerName, isHost: true }];
         renderOnlineWaitingRoom();
+
+        p2pRoom.onPeerJoin(peerId => {
+          if (p2pLobbyPlayers.length >= 4) return;
+          sendLobby({ players: p2pLobbyPlayers }, peerId);
+        });
+
+        p2pRoom.onPeerLeave(peerId => {
+          p2pLobbyPlayers = p2pLobbyPlayers.filter(p => p.id !== peerId);
+          renderOnlineWaitingRoom();
+          sendLobby({ players: p2pLobbyPlayers });
+          if (hostAuthoritative && hostAuthoritative.status === 'playing') {
+            showToast("A player disconnected from the P2P room.", "error");
+          }
+        });
+
+        onJoinReq((data, peerId) => {
+          if (hostAuthoritative) return;
+          if (p2pLobbyPlayers.length >= 4) return;
+          if (!p2pLobbyPlayers.some(p => p.id === peerId)) {
+            p2pLobbyPlayers.push({ id: peerId, name: data.name || 'Guest', isHost: false });
+          }
+          renderOnlineWaitingRoom();
+          sendLobby({ players: p2pLobbyPlayers });
+        });
+
+        onAction((act, peerId) => {
+          handleHostAuthoritativeAction(peerId, act);
+        });
       } else {
         p2pLobbyPlayers = [{ id: myLocalPlayerId, name: playerName, isHost: false }];
         renderOnlineWaitingRoom();
-      }
 
-      p2pRoom.onPeerJoin((peerId) => {
-        if (!p2pIsHost) {
-          sendHello({ name: playerName }, peerId);
-        } else {
-          sendLobby({ players: p2pLobbyPlayers }, peerId);
-          if (hostAuthoritative) {
-            sendState({ view: createRedactedViewForPlayer(hostAuthoritative, peerId) }, peerId);
+        p2pRoom.onPeerJoin(peerId => {
+          sendJoinReq({ name: playerName }, peerId);
+        });
+
+        onLobby((data) => {
+          if (data && Array.isArray(data.players)) {
+            p2pLobbyPlayers = data.players;
+            renderOnlineWaitingRoom();
           }
+        });
+
+        onState((redactedState) => {
+          currentMode = 'online';
+          gameState = redactedState;
+          gameState.players.forEach(p => {
+            if (p.id === myLocalPlayerId) {
+              p.notebook = localOnlineNotebook;
+            }
+          });
+          showScreen('screen-game');
+          renderGameBoard();
+        });
+
+        onGuessRes((res) => {
+          if (!res.correct) {
+            const fb = document.getElementById('guess-feedback-box');
+            fb.textContent = "Wrong guess! Try again.";
+            fb.classList.remove('hidden');
+            showToast("Wrong guess! Try again.", "error");
+          }
+        });
+      }
+    }
+
+    function broadcastAuthoritativeOnlineState() {
+      if (!p2pIsHost || !hostAuthoritative) return;
+      hostAuthoritative.players.forEach(p => {
+        const view = buildRedactedViewForPeer(hostAuthoritative, p.id);
+        if (p.id === myLocalPlayerId) {
+          currentMode = 'online';
+          gameState = view;
+          gameState.players.forEach(gp => {
+            if (gp.id === myLocalPlayerId) gp.notebook = localOnlineNotebook;
+          });
+          showScreen('screen-game');
+          renderGameBoard();
+        } else if (p2pActions) {
+          p2pActions.sendState(view, p.id);
         }
-      });
-
-      p2pRoom.onPeerLeave((peerId) => {
-        if (p2pIsHost) {
-          p2pLobbyPlayers = p2pLobbyPlayers.filter((p) => p.id !== peerId);
-          sendLobby({ players: p2pLobbyPlayers });
-          renderOnlineWaitingRoom();
-          showToast("A player disconnected from the room.", "info");
-        }
-      });
-
-      onHello((data, peerId) => {
-        if (!p2pIsHost) return;
-        if (p2pLobbyPlayers.length >= 4 && !p2pLobbyPlayers.some((p) => p.id === peerId)) {
-          return;
-        }
-        const existing = p2pLobbyPlayers.find((p) => p.id === peerId);
-        if (existing) {
-          existing.name = data.name || existing.name;
-        } else {
-          p2pLobbyPlayers.push({ id: peerId, name: data.name || 'Guest', isHost: false });
-        }
-        sendLobby({ players: p2pLobbyPlayers });
-        renderOnlineWaitingRoom();
-      });
-
-      onLobby((data) => {
-        if (p2pIsHost) return;
-        p2pLobbyPlayers = data.players || [];
-        renderOnlineWaitingRoom();
-      });
-
-      onState((data) => {
-        if (p2pIsHost || !data || !data.view) return;
-        gameState = data.view;
-        showScreen('screen-game');
-        renderGameScreen();
-      });
-
-      onCmd((cmd, peerId) => {
-        if (!p2pIsHost || !hostAuthoritative) return;
-        if (cmd.type === 'DRAW') {
-          performDrawAction(peerId);
-        } else if (cmd.type === 'SORT') {
-          performSortAction(peerId, cmd.targetOpponentId, cmd.clueTileId);
-        } else if (cmd.type === 'COMPARE') {
-          performCompareAction(peerId, cmd.targetOpponentId, cmd.clueTileId, cmd.slotIndex);
-        } else if (cmd.type === 'GUESS') {
-          const result = evaluateFinalGuess(peerId, cmd.numbers);
-          sendGuessRes(result, peerId);
-        }
-      });
-
-      onGuessRes((res) => {
-        handleGuessModalResponse(res);
       });
     }
 
-    function broadcastHostGameState() {
-      if (!p2pIsHost || !p2pRoom || !p2pActions || !hostAuthoritative) return;
-      for (const pl of hostAuthoritative.players) {
-        if (pl.id !== myLocalPlayerId) {
-          const view = createRedactedViewForPlayer(hostAuthoritative, pl.id);
-          p2pActions.sendState({ view }, pl.id);
+    function handleHostAuthoritativeAction(actorId, act) {
+      if (!p2pIsHost || !hostAuthoritative || hostAuthoritative.status !== 'playing') return;
+      const activePlayer = hostAuthoritative.players[hostAuthoritative.turnIndex];
+
+      if (act.type === 'guess') {
+        const won = evaluateFinalGuess(hostAuthoritative, actorId, act.numbers);
+        if (won) {
+          broadcastAuthoritativeOnlineState();
+        } else {
+          if (actorId === myLocalPlayerId) {
+            const fb = document.getElementById('guess-feedback-box');
+            fb.textContent = "Wrong guess! Try again.";
+            fb.classList.remove('hidden');
+            showToast("Wrong guess! Try again.", "error");
+          } else if (p2pActions) {
+            p2pActions.sendGuessRes({ correct: false }, actorId);
+          }
+          broadcastAuthoritativeOnlineState();
+        }
+        return;
+      }
+
+      // Enforce turn ownership for draw & clues
+      if (activePlayer.id !== actorId) return;
+
+      if (act.type === 'draw') {
+        if (performDrawAction(hostAuthoritative)) {
+          broadcastAuthoritativeOnlineState();
+        }
+      } else if (act.type === 'sort') {
+        if (performSortClue(hostAuthoritative, actorId, act.targetOppId, act.clueTileId)) {
+          broadcastAuthoritativeOnlineState();
+        }
+      } else if (act.type === 'compare') {
+        if (performCompareClue(hostAuthoritative, actorId, act.targetOppId, act.clueTileId, act.slotIndex)) {
+          broadcastAuthoritativeOnlineState();
         }
       }
     }
 
+    function dispatchOnlinePlayerAction(actionPayload) {
+      if (p2pIsHost) {
+        handleHostAuthoritativeAction(myLocalPlayerId, actionPayload);
+      } else if (p2pActions) {
+        p2pActions.sendAction(actionPayload);
+      }
+    }
+
     // =========================================================================
-    // 8. UI RENDERING & INTERACTION CONTROLLERS
+    // 7. UI NAVIGATION, TOASTS & RENDERING
     // =========================================================================
-    const screens = ['screen-menu', 'screen-setup-online', 'screen-setup-ai', 'screen-setup-offline', 'screen-game'];
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const el = document.createElement('div');
+      const palette = type === 'error'
+        ? 'bg-rose-950/95 border-rose-500 text-rose-100'
+        : type === 'success'
+          ? 'bg-emerald-950/95 border-emerald-500 text-emerald-100'
+          : 'bg-slate-900/95 border-indigo-400 text-white';
+
+      el.className = `px-4 py-2.5 rounded-2xl border shadow-2xl text-xs sm:text-sm font-semibold text-center backdrop-blur-md transition-all duration-300 ${palette}`;
+      el.textContent = message;
+      container.appendChild(el);
+
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(-8px)';
+        setTimeout(() => el.remove(), 300);
+      }, 3200);
+    }
 
     function showScreen(screenId) {
-      screens.forEach((id) => {
+      const screens = ['screen-menu', 'screen-setup-online', 'screen-setup-ai', 'screen-setup-offline', 'screen-game'];
+      screens.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.toggle('hidden', id !== screenId);
       });
@@ -1491,22 +1467,430 @@
       if (exitBtn) exitBtn.classList.toggle('hidden', screenId !== 'screen-game');
     }
 
-    function showToast(msg, type = 'info') {
-      const container = document.getElementById('toast-container');
-      if (!container) return;
-      const colors = {
-        info: 'bg-slate-900/95 border-indigo-400/60 text-white',
-        error: 'bg-rose-950/95 border-rose-500 text-rose-100',
-        success: 'bg-emerald-950/95 border-emerald-400 text-emerald-100'
+    function renderDotsString(count) {
+      return '●'.repeat(count || 1);
+    }
+
+    function renderOnlineWaitingRoom() {
+      document.getElementById('online-lobby-actions').classList.add('hidden');
+      document.getElementById('online-waiting-room').classList.remove('hidden');
+      document.getElementById('display-room-code').textContent = p2pRoomCode;
+      document.getElementById('lobby-player-count').textContent = `${p2pLobbyPlayers.length} / 4`;
+
+      const listEl = document.getElementById('lobby-players-list');
+      listEl.innerHTML = p2pLobbyPlayers.map((p, idx) => `
+        <div class="flex items-center justify-between px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <span class="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-300 font-bold text-xs flex items-center justify-center">P${idx + 1}</span>
+            <span class="font-semibold text-sm text-white">${escapeHtml(p.name)}</span>
+          </div>
+          <span class="text-xs font-bold ${p.isHost ? 'text-amber-300' : 'text-slate-400'}">
+            ${p.isHost ? '👑 Host' : 'Player'}
+          </span>
+        </div>
+      `).join('');
+
+      const startBtn = document.getElementById('btn-start-online-game');
+      const waitMsg = document.getElementById('waiting-for-host-msg');
+      if (p2pIsHost) {
+        startBtn.classList.remove('hidden');
+        startBtn.disabled = p2pLobbyPlayers.length < 2;
+        startBtn.textContent = p2pLobbyPlayers.length < 2 ? 'Waiting for 2+ Players...' : `Start Game (${p2pLobbyPlayers.length} Players)`;
+        waitMsg.classList.add('hidden');
+      } else {
+        startBtn.classList.add('hidden');
+        waitMsg.classList.remove('hidden');
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function getViewingPlayer() {
+      if (!gameState) return null;
+      if (currentMode === 'offline') {
+        return gameState.players[gameState.turnIndex];
+      }
+      return gameState.players.find(p => p.id === myLocalPlayerId) || gameState.players[0];
+    }
+
+    function isMyTurn() {
+      if (!gameState || gameState.status !== 'playing') return false;
+      const active = gameState.players[gameState.turnIndex];
+      if (currentMode === 'offline') return true;
+      return active.id === myLocalPlayerId && !active.isAI;
+    }
+
+    function renderGameBoard() {
+      if (!gameState) return;
+      const activePlayer = gameState.players[gameState.turnIndex];
+      const viewer = getViewingPlayer();
+      const myTurn = isMyTurn();
+
+      // 1. Top Turn Banner
+      document.getElementById('turn-avatar').textContent = `P${gameState.turnIndex + 1}`;
+      document.getElementById('turn-player-name').textContent =
+        activePlayer.id === viewer.id ? `Your Turn (${activePlayer.name})` : `${activePlayer.name}'s Turn`;
+
+      const roomBadge = document.getElementById('room-badge-ingame');
+      if (currentMode === 'online' && p2pRoomCode) {
+        roomBadge.textContent = `ROOM: ${p2pRoomCode}`;
+        roomBadge.classList.remove('hidden');
+      } else {
+        roomBadge.classList.add('hidden');
+      }
+
+      const instEl = document.getElementById('turn-instruction');
+      if (gameState.status === 'finished') {
+        const winner = gameState.players.find(p => p.id === gameState.winnerId);
+        instEl.textContent = `🏆 ${winner ? winner.name : 'Someone'} won the match!`;
+      } else if (!myTurn) {
+        instEl.textContent = activePlayer.isAI
+          ? `🤖 ${activePlayer.name} is thinking and making deductions...`
+          : `⏳ Waiting for ${activePlayer.name} to complete their turn...`;
+      } else if (gameState.turnStep === 'draw') {
+        instEl.textContent = `Step 1: Tap DRAW to reveal 1 tile from the supply.`;
+      } else {
+        instEl.textContent = `Step 2: Tap 1 face-up clue card below, then choose SORT or COMPARE.`;
+      }
+
+      // 2. Opponents' Racks (Visible numbers!)
+      const oppContainer = document.getElementById('opponents-container');
+      const opponents = gameState.players.filter(p => p.id !== viewer.id);
+      oppContainer.innerHTML = opponents.map(opp => {
+        const isTurn = opp.id === activePlayer.id;
+        return `
+          <div class="p-3 rounded-xl bg-slate-950/85 border ${isTurn ? 'border-amber-400 active-turn-ring' : 'border-slate-800'}">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-display font-bold text-sm text-white flex items-center gap-1.5">
+                ${opp.isAI ? '🤖' : '👤'} ${escapeHtml(opp.name)}
+              </span>
+              ${isTurn ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-400 text-slate-950">ACTIVE</span>' : ''}
+            </div>
+            <div class="grid grid-cols-5 gap-1.5">
+              ${opp.secretTiles.map(t => `
+                <div class="game-tile tile-${t.color} py-2 px-1 flex flex-col items-center justify-center text-white">
+                  <span class="tile-num text-base sm:text-lg leading-none">${t.number}</span>
+                  <span class="text-[9px] tracking-widest mt-1 opacity-95">${renderDotsString(t.dots)}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // 3. Draw Pile & Last Drawn Tile
+      const drawBtn = document.getElementById('btn-draw-tile');
+      const remainingDrawCount = typeof gameState.drawPileCount === 'number'
+        ? gameState.drawPileCount
+        : (gameState.drawPile ? gameState.drawPile.length : 0);
+      document.getElementById('draw-pile-count').textContent = `${remainingDrawCount} left`;
+      drawBtn.disabled = !(myTurn && gameState.turnStep === 'draw');
+
+      const lastDrawnBadge = document.getElementById('last-drawn-badge');
+      if (gameState.lastDrawnTile) {
+        lastDrawnBadge.classList.remove('hidden');
+        document.getElementById('last-drawn-text').textContent =
+          `#${gameState.lastDrawnTile.number} ${gameState.lastDrawnTile.color} (${gameState.lastDrawnTile.dots}●)`;
+      } else {
+        lastDrawnBadge.classList.add('hidden');
+      }
+
+      // 4. Face-Up Clue Cards
+      const poolContainer = document.getElementById('faceup-pool-container');
+      const canSelectTile = myTurn && gameState.turnStep === 'clue';
+      if (gameState.faceUpPool.length === 0) {
+        poolContainer.innerHTML = `<div class="col-span-full text-xs text-slate-400 py-4 text-center w-full">No face-up clue tiles remaining.</div>`;
+      } else {
+        poolContainer.innerHTML = gameState.faceUpPool.map(t => {
+          const isSelected = selectedClueTileId === t.id;
+          return `
+            <button type="button" data-clue-id="${t.id}" ${!canSelectTile ? 'disabled' : ''}
+              class="clue-pool-tile game-tile tile-${t.color} ${canSelectTile ? 'clickable' : 'opacity-90'} ${isSelected ? 'selected-tile' : ''} w-full sm:w-16 h-20 sm:h-22 flex flex-col items-center justify-center text-white">
+              <span class="tile-num text-xl sm:text-2xl leading-none">${t.number}</span>
+              <span class="text-[10px] tracking-widest mt-1 font-bold">${renderDotsString(t.dots)}</span>
+            </button>
+          `;
+        }).join('');
+
+        poolContainer.querySelectorAll('.clue-pool-tile').forEach(btn => {
+          btn.addEventListener('click', () => {
+            if (!canSelectTile) return;
+            const id = btn.getAttribute('data-clue-id');
+            selectedClueTileId = (selectedClueTileId === id) ? null : id;
+            pendingCompareMode = false;
+            renderGameBoard();
+          });
+        });
+      }
+
+      // 5. Clue Action Panel
+      const cluePanel = document.getElementById('clue-action-panel');
+      if (canSelectTile) {
+        cluePanel.classList.remove('hidden');
+        const selTile = gameState.faceUpPool.find(t => t.id === selectedClueTileId);
+        document.getElementById('selected-clue-label').textContent = selTile
+          ? `#${selTile.number} ${selTile.color} (${selTile.dots}●)`
+          : 'None (Tap a tile above)';
+
+        const oppSelect = document.getElementById('select-target-opponent');
+        const prevVal = oppSelect.value;
+        oppSelect.innerHTML = opponents.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
+        if (opponents.some(o => o.id === prevVal)) oppSelect.value = prevVal;
+
+        document.getElementById('btn-action-sort').disabled = !selTile;
+        document.getElementById('btn-action-compare').disabled = !selTile;
+
+        const slotPicker = document.getElementById('compare-slot-picker');
+        if (pendingCompareMode && selTile) {
+          slotPicker.classList.remove('hidden');
+          const slotBtnsEl = document.getElementById('compare-slot-buttons');
+          slotBtnsEl.innerHTML = viewer.secretTiles.map((st, idx) => `
+            <button type="button" data-slot="${idx}" class="compare-slot-choice py-2.5 px-1 rounded-xl tile-${st.color} border-2 font-display font-bold text-xs sm:text-sm text-white shadow hover:scale-105 transition">
+              Slot #${idx + 1}<br><span class="text-[10px] opacity-90">${st.color}</span>
+            </button>
+          `).join('');
+
+          slotBtnsEl.querySelectorAll('.compare-slot-choice').forEach(b => {
+            b.addEventListener('click', () => {
+              const slotIdx = parseInt(b.getAttribute('data-slot'), 10);
+              executePlayerClue('compare', slotIdx);
+            });
+          });
+        } else {
+          slotPicker.classList.add('hidden');
+        }
+      } else {
+        cluePanel.classList.add('hidden');
+      }
+
+      // 6. Viewer's Own Secret Rack + Interleaved SORT Clues + COMPARE Clues
+      document.getElementById('my-rack-title').textContent = `${viewer.name}'s Secret Rack`;
+      const trackContainer = document.getElementById('my-rack-slots-container');
+      let trackHtml = '';
+
+      for (let i = 0; i <= 5; i++) {
+        // Render any SORT clues placed in gap `i`
+        const sortedGroup = viewer.sortClues[i] || [];
+        if (sortedGroup.length > 0) {
+          trackHtml += `<div class="flex items-center gap-1.5 self-center">`;
+          sortedGroup.forEach(st => {
+            trackHtml += `
+              <div class="game-tile tile-${st.color} w-12 h-16 sm:w-14 sm:h-18 flex flex-col items-center justify-center text-white opacity-95" title="Sorted Clue Tile">
+                <span class="text-[9px] font-bold uppercase tracking-wider text-amber-200">SORT</span>
+                <span class="tile-num text-base sm:text-lg leading-none">${st.number}</span>
+                <span class="text-[9px] tracking-widest mt-0.5">${renderDotsString(st.dots)}</span>
+              </div>
+            `;
+          });
+          trackHtml += `</div>`;
+        }
+
+        // Render Secret Slot `i` (for i = 0..4)
+        if (i < 5) {
+          const secret = viewer.secretTiles[i];
+          const compList = viewer.compareClues[i] || [];
+          const revealedNum = (gameState.status === 'finished' && secret.number) ? secret.number : '?';
+
+          trackHtml += `
+            <div class="flex flex-col items-center gap-2">
+              <div class="game-tile tile-${secret.color} w-16 h-22 sm:w-20 sm:h-26 flex flex-col items-center justify-center text-white relative">
+                <span class="absolute top-1.5 left-2 text-[10px] font-extrabold opacity-80">#${i + 1}</span>
+                <span class="font-display font-bold text-2xl sm:text-3xl">${revealedNum}</span>
+                <span class="text-[11px] font-extrabold uppercase tracking-wider mt-1 px-2 py-0.5 rounded-full bg-black/30">${secret.color}</span>
+              </div>
+
+              <!-- COMPARE clues attached below this slot -->
+              <div class="flex flex-col items-center gap-1.5 min-h-[24px]">
+                ${compList.map(c => `
+                  <div class="game-tile tile-${c.tile.color} ${c.match ? 'straight-yes' : 'angled-no'} w-13 h-15 px-1.5 py-1 flex flex-col items-center justify-center text-white"
+                       title="${c.match ? 'YES: Same dot count!' : 'NO: Different dot count'}">
+                    <span class="text-[9px] font-extrabold ${c.match ? 'text-emerald-300' : 'text-rose-200'}">${c.match ? 'YES ✓' : 'NO ✕'}</span>
+                    <span class="tile-num text-sm leading-none">${c.tile.number}</span>
+                    <span class="text-[9px] tracking-widest">${renderDotsString(c.tile.dots)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `;
+        }
+      }
+      trackContainer.innerHTML = trackHtml;
+
+      // 7. Game Log
+      document.getElementById('log-count-badge').textContent = `${gameState.logs.length} events`;
+      document.getElementById('game-log-list').innerHTML = gameState.logs.map((entry, idx) => `
+        <div class="px-2.5 py-1.5 rounded-lg ${idx === 0 ? 'bg-indigo-500/15 border border-indigo-500/30 text-white font-semibold' : 'bg-slate-950/60 text-slate-300'}">
+          ${escapeHtml(entry)}
+        </div>
+      `).join('');
+
+      // 8. Private Deduction Notebook (5 Color-Wise Rows: Red first, Ascending Left to Right)
+      renderNotebook(viewer);
+
+      // 9. Winner Modal Check
+      if (gameState.status === 'finished') {
+        showWinnerModal();
+      }
+    }
+
+    function renderNotebook(viewer) {
+      const nb = viewer.notebook || createEmptyNotebook();
+      const crossedSet = new Set(nb.crossed || []);
+
+      // Sync estimate inputs
+      document.querySelectorAll('.est-input').forEach((inp, idx) => {
+        inp.value = nb.estimates[idx] || '';
+      });
+
+      const fullDeck = createFullDeck();
+      const rowBadgeStyles = {
+        Red: 'bg-red-600/25 border-red-500/50 text-red-200',
+        Blue: 'bg-blue-600/25 border-blue-500/50 text-blue-200',
+        Green: 'bg-emerald-600/25 border-emerald-500/50 text-emerald-200',
+        Yellow: 'bg-amber-600/25 border-amber-500/50 text-amber-200',
+        Purple: 'bg-purple-600/25 border-purple-500/50 text-purple-200'
       };
-      const el = document.createElement('div');
-      el.className = `pointer-events-auto px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-semibold shadow-2xl transition-all duration-300 ${colors[type] || colors.info}`;
-      el.textContent = msg;
-      container.appendChild(el);
-      setTimeout(() => {
-        el.style.opacity = '0';
-        setTimeout(() => el.remove(), 300);
-      }, 3200);
+
+      const gridEl = document.getElementById('notebook-grid');
+      gridEl.innerHTML = COLORS.map(color => {
+        // Ascending order 1..60 filtered by color
+        const tilesOfColor = fullDeck.filter(t => t.color === color).sort((a, b) => a.number - b.number);
+        return `
+          <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="px-2.5 py-0.5 rounded-lg border text-xs font-extrabold uppercase tracking-wider ${rowBadgeStyles[color]}">
+                ${color}
+              </span>
+              <span class="text-[11px] text-slate-400 font-semibold">Low → High</span>
+            </div>
+            <div class="grid grid-cols-6 gap-1.5">
+              ${tilesOfColor.map(t => {
+                const isCrossed = crossedSet.has(t.number);
+                return `
+                  <button type="button" data-nb-num="${t.number}"
+                    class="notebook-cell-btn relative rounded-lg py-1.5 px-1 flex flex-col items-center justify-center border transition ${
+                      isCrossed
+                        ? 'bg-slate-900/60 border-slate-800 text-slate-600 line-through opacity-45'
+                        : `tile-${color} text-white hover:brightness-110 active:scale-95`
+                    }">
+                    <span class="tile-num text-sm sm:text-base leading-none">${t.number}</span>
+                    <span class="text-[8px] tracking-widest mt-0.5 opacity-95">${renderDotsString(t.dots)}</span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      gridEl.querySelectorAll('.notebook-cell-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const num = parseInt(btn.getAttribute('data-nb-num'), 10);
+          const idx = nb.crossed.indexOf(num);
+          if (idx === -1) {
+            nb.crossed.push(num);
+          } else {
+            nb.crossed.splice(idx, 1);
+          }
+          if (currentMode === 'online') {
+            localOnlineNotebook = nb;
+          } else if (currentMode === 'offline' && gameState) {
+            saveOfflineGameState(gameState);
+          }
+          renderNotebook(viewer);
+        });
+      });
+    }
+
+    function executePlayerClue(type, slotIndex = 0) {
+      if (!gameState || !isMyTurn() || gameState.turnStep !== 'clue' || !selectedClueTileId) return;
+      const targetOppId = document.getElementById('select-target-opponent').value;
+      if (!targetOppId) return;
+
+      if (currentMode === 'online') {
+        dispatchOnlinePlayerAction({
+          type,
+          targetOppId,
+          clueTileId: selectedClueTileId,
+          slotIndex
+        });
+        selectedClueTileId = null;
+        pendingCompareMode = false;
+        return;
+      }
+
+      const activePlayer = gameState.players[gameState.turnIndex];
+      const ok = type === 'sort'
+        ? performSortClue(gameState, activePlayer.id, targetOppId, selectedClueTileId)
+        : performCompareClue(gameState, activePlayer.id, targetOppId, selectedClueTileId, slotIndex);
+
+      if (!ok) return;
+
+      if (currentMode === 'offline') {
+        saveOfflineGameState(gameState);
+        renderGameBoard();
+        if (gameState.status === 'playing') {
+          showPassAndPlayPrivacyScreen();
+        }
+      } else if (currentMode === 'ai') {
+        renderGameBoard();
+        runAITurnIfNeeded();
+      }
+    }
+
+    function showPassAndPlayPrivacyScreen() {
+      const nextPlayer = gameState.players[gameState.turnIndex];
+      document.getElementById('privacy-next-player').textContent = nextPlayer.name;
+      document.getElementById('screen-privacy').classList.remove('hidden');
+    }
+
+    function showWinnerModal() {
+      const winner = gameState.players.find(p => p.id === gameState.winnerId);
+      document.getElementById('winner-title').textContent = `${winner ? winner.name : 'Champion'} GOT FIVE!`;
+
+      const racksHtml = gameState.players.map(p => `
+        <div class="p-3 rounded-xl bg-slate-900 border ${p.id === gameState.winnerId ? 'border-amber-400' : 'border-slate-800'}">
+          <div class="text-xs font-bold text-slate-300 mb-2 flex items-center justify-between">
+            <span>${escapeHtml(p.name)}</span>
+            ${p.id === gameState.winnerId ? '<span class="text-amber-300">👑 WINNER</span>' : ''}
+          </div>
+          <div class="grid grid-cols-5 gap-1.5">
+            ${p.secretTiles.map(t => `
+              <div class="game-tile tile-${t.color} py-2 flex flex-col items-center justify-center text-white">
+                <span class="tile-num text-base leading-none">${t.number ?? '?'}</span>
+                <span class="text-[9px] mt-0.5">${renderDotsString(t.dots || 1)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('');
+
+      document.getElementById('winner-all-racks').innerHTML = racksHtml;
+      document.getElementById('modal-winner').classList.remove('hidden');
+      if (currentMode === 'offline') {
+        clearOfflineGameState();
+      }
+    }
+
+    // =========================================================================
+    // 8. EVENT LISTENERS & INITIALIZATION (IMMEDIATE SYNCHRONOUS BINDING)
+    // =========================================================================
+    function renderOfflineNameInputs() {
+      const container = document.getElementById('offline-player-names');
+      let html = '';
+      for (let i = 0; i < selectedOfflineCount; i++) {
+        html += `
+          <div>
+            <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Player ${i + 1} Name</label>
+            <input type="text" maxlength="16" value="Player ${i + 1}" class="offline-name-input w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-400" />
+          </div>
+        `;
+      }
+      container.innerHTML = html;
     }
 
     function updateNetworkIndicator() {
@@ -1522,418 +1906,51 @@
         text.textContent = 'ONLINE';
         if (warn) warn.classList.add('hidden');
       } else {
-        badge.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40';
+        badge.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30';
         dot.className = 'w-2 h-2 rounded-full bg-amber-400';
         text.textContent = 'OFFLINE';
         if (warn) warn.classList.remove('hidden');
       }
     }
 
-    function renderOnlineWaitingRoom() {
-      document.getElementById('online-lobby-actions').classList.add('hidden');
-      document.getElementById('online-waiting-room').classList.remove('hidden');
-      document.getElementById('display-room-code').textContent = p2pRoomCode;
-      document.getElementById('lobby-player-count').textContent = `${p2pLobbyPlayers.length} / 4`;
+    function initApp() {
+      updateNetworkIndicator();
+      window.addEventListener('online', updateNetworkIndicator);
+      window.addEventListener('offline', updateNetworkIndicator);
 
-      const listEl = document.getElementById('lobby-players-list');
-      listEl.innerHTML = p2pLobbyPlayers
-        .map(
-          (p) => `
-          <div class="flex items-center justify-between px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800">
-            <span class="font-bold text-sm text-white">${escapeHtml(p.name)} ${p.id === myLocalPlayerId ? '<span class="text-xs text-amber-300">(You)</span>' : ''}</span>
-            <span class="text-xs font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">${p.isHost ? 'HOST' : 'PLAYER'}</span>
-          </div>`
-        )
-        .join('');
+      renderOfflineNameInputs();
 
-      const startBtn = document.getElementById('btn-start-online-game');
-      const waitMsg = document.getElementById('waiting-for-host-msg');
-      if (p2pIsHost) {
-        startBtn.classList.remove('hidden');
-        waitMsg.classList.add('hidden');
-        startBtn.disabled = p2pLobbyPlayers.length < 2;
-      } else {
-        startBtn.classList.add('hidden');
-        waitMsg.classList.remove('hidden');
-      }
-    }
+      // Check for saved offline game in IndexedDB
+      loadOfflineGameState().then(saved => {
+        if (saved && saved.status === 'playing') {
+          const banner = document.getElementById('resume-banner');
+          const details = document.getElementById('resume-details');
+          banner.classList.remove('hidden');
+          details.textContent = `${saved.players.map(p => p.name).join(' vs ')} • Turn: ${saved.players[saved.turnIndex].name}`;
 
-    function escapeHtml(str) {
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    function renderTileElement(tile, options = {}) {
-      const { small = false, clickable = false, selected = false, angled = false, straight = false, hiddenNum = false } = options;
-      const sizeClasses = small ? 'w-11 h-14 sm:w-12 sm:h-16 text-base sm:text-lg' : 'w-14 h-18 sm:w-16 sm:h-20 text-xl sm:text-2xl';
-      const stateClasses = [
-        clickable ? 'clickable' : '',
-        selected ? 'selected-tile' : '',
-        angled ? 'angled-no' : '',
-        straight ? 'straight-yes' : ''
-      ].join(' ');
-
-      const displayLabel = hiddenNum ? '?' : tile.number;
-      const dotsDisplay = hiddenNum ? tile.color.slice(0, 3).toUpperCase() : renderDots(tile.dots);
-
-      return `
-        <div ${clickable ? `data-tile-id="${tile.id}"` : ''} class="game-tile tile-${tile.color} ${sizeClasses} ${stateClasses} flex flex-col items-center justify-center text-white shrink-0 select-none">
-          <span class="tile-num leading-none">${displayLabel}</span>
-          <span class="text-[10px] sm:text-xs font-bold tracking-widest mt-1 opacity-95">${dotsDisplay}</span>
-        </div>
-      `;
-    }
-
-    function getActiveViewerPlayer() {
-      if (!gameState) return null;
-      if (gameState.mode === 'offline') {
-        return gameState.players[gameState.currentTurnIdx];
-      }
-      return gameState.players.find((p) => p.id === myLocalPlayerId) || gameState.players[0];
-    }
-
-    function renderGameScreen() {
-      if (!gameState) return;
-
-      // Pass-and-Play privacy screen check
-      const privacyScreen = document.getElementById('screen-privacy');
-      if (gameState.mode === 'offline' && gameState.passAndPlayLocked && !gameState.winnerId) {
-        const nextP = gameState.players[gameState.currentTurnIdx];
-        document.getElementById('privacy-next-player').textContent = nextP.name;
-        privacyScreen.classList.remove('hidden');
-      } else {
-        privacyScreen.classList.add('hidden');
-      }
-
-      const activePlayer = gameState.players[gameState.currentTurnIdx];
-      const viewerPlayer = getActiveViewerPlayer();
-      const isMyTurn = activePlayer.id === viewerPlayer.id && !gameState.winnerId;
-
-      // Header Turn Banner
-      document.getElementById('turn-avatar').textContent = activePlayer.name.slice(0, 2).toUpperCase();
-      document.getElementById('turn-player-name').textContent = `${activePlayer.name}'s Turn`;
-      const roomBadge = document.getElementById('room-badge-ingame');
-      if (gameState.mode === 'online' && gameState.roomCode) {
-        roomBadge.textContent = `ROOM: ${gameState.roomCode}`;
-        roomBadge.classList.remove('hidden');
-      } else {
-        roomBadge.classList.add('hidden');
-      }
-
-      const instEl = document.getElementById('turn-instruction');
-      if (gameState.winnerId) {
-        const winP = gameState.players.find((p) => p.id === gameState.winnerId);
-        instEl.textContent = `🏆 ${winP ? winP.name : 'Winner'} cracked GOT FIVE!`;
-      } else if (!isMyTurn) {
-        instEl.textContent = `Waiting for ${activePlayer.name} to make a move...`;
-      } else if (gameState.turnStep === 'DRAW') {
-        instEl.textContent = `Step 1: Tap the DRAW pile to reveal 1 tile.`;
-      } else {
-        instEl.textContent = `Step 2: Select 1 face-up clue card below and choose SORT or COMPARE.`;
-      }
-
-      // Draw Pile Count & Button
-      const drawCount = gameState.mode === 'online' && typeof gameState.drawPileCount === 'number'
-        ? gameState.drawPileCount
-        : gameState.drawPile.length;
-      document.getElementById('draw-pile-count').textContent = `${drawCount} left`;
-      document.getElementById('btn-draw-tile').disabled = !(isMyTurn && gameState.turnStep === 'DRAW');
-
-      // Last Drawn Tile Badge
-      const lastDrawnBadge = document.getElementById('last-drawn-badge');
-      if (gameState.lastDrawnTile) {
-        lastDrawnBadge.classList.remove('hidden');
-        document.getElementById('last-drawn-text').textContent = `#${gameState.lastDrawnTile.number} ${gameState.lastDrawnTile.color} (${renderDots(gameState.lastDrawnTile.dots)})`;
-      } else {
-        lastDrawnBadge.classList.add('hidden');
-      }
-
-      // Face-up Clue Pool
-      const poolEl = document.getElementById('faceup-pool-container');
-      const canSelectClue = isMyTurn && gameState.turnStep === 'CLUE';
-      poolEl.innerHTML = gameState.faceUpPool
-        .map((tile) =>
-          renderTileElement(tile, {
-            clickable: canSelectClue,
-            selected: selectedClueTileId === tile.id
-          })
-        )
-        .join('');
-
-      if (canSelectClue) {
-        poolEl.querySelectorAll('[data-tile-id]').forEach((el) => {
-          el.addEventListener('click', () => {
-            const tid = Number(el.getAttribute('data-tile-id'));
-            selectedClueTileId = selectedClueTileId === tid ? null : tid;
-            compareModeActive = false;
-            renderGameScreen();
-          });
-        });
-      }
-
-      // Clue Action Builder Panel
-      const actionPanel = document.getElementById('clue-action-panel');
-      if (canSelectClue) {
-        actionPanel.classList.remove('hidden');
-        const chosenTile = gameState.faceUpPool.find((t) => t.id === selectedClueTileId);
-        document.getElementById('selected-clue-label').textContent = chosenTile
-          ? `#${chosenTile.number} ${chosenTile.color} (${renderDots(chosenTile.dots)})`
-          : 'None (Tap a tile above)';
-
-        const oppSelect = document.getElementById('select-target-opponent');
-        const prevVal = oppSelect.value;
-        const opponents = gameState.players.filter((p) => p.id !== viewerPlayer.id);
-        oppSelect.innerHTML = opponents
-          .map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`)
-          .join('');
-        if (opponents.some((o) => o.id === prevVal)) oppSelect.value = prevVal;
-
-        document.getElementById('btn-action-sort').disabled = !chosenTile;
-        document.getElementById('btn-action-compare').disabled = !chosenTile;
-
-        const slotPicker = document.getElementById('compare-slot-picker');
-        if (compareModeActive && chosenTile) {
-          slotPicker.classList.remove('hidden');
-          const slotBtns = document.getElementById('compare-slot-buttons');
-          slotBtns.innerHTML = viewerPlayer.secretTiles
-            .map(
-              (st, idx) => `
-              <button type="button" data-slot-idx="${idx}" class="min-h-[46px] py-2 px-1 rounded-xl tile-${st.color} text-white font-display font-bold text-xs sm:text-sm shadow hover:brightness-110 transition">
-                #${idx + 1}<br><span class="text-[10px] opacity-90">${st.color}</span>
-              </button>`
-            )
-            .join('');
-          slotBtns.querySelectorAll('[data-slot-idx]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-              const sIdx = Number(btn.getAttribute('data-slot-idx'));
-              const targetOppId = oppSelect.value;
-              if (gameState.mode === 'online' && !p2pIsHost) {
-                p2pActions.sendCmd({
-                  type: 'COMPARE',
-                  targetOpponentId: targetOppId,
-                  clueTileId: chosenTile.id,
-                  slotIndex: sIdx
-                });
-                selectedClueTileId = null;
-                compareModeActive = false;
-              } else {
-                performCompareAction(viewerPlayer.id, targetOppId, chosenTile.id, sIdx);
-              }
-            });
-          });
-        } else {
-          slotPicker.classList.add('hidden');
-        }
-      } else {
-        actionPanel.classList.add('hidden');
-      }
-
-      // Render Opponents' Racks (Visible numbers!)
-      const oppContainer = document.getElementById('opponents-container');
-      const otherPlayers = gameState.players.filter((p) => p.id !== viewerPlayer.id);
-      oppContainer.innerHTML = otherPlayers
-        .map((opp) => {
-          const isTurn = opp.id === activePlayer.id;
-          return `
-            <div class="p-3 rounded-xl bg-slate-950/80 border ${isTurn ? 'border-amber-400 active-turn-ring' : 'border-slate-800'} space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="font-display font-bold text-sm text-white">${escapeHtml(opp.name)} ${opp.isAI ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase">${opp.difficulty}</span>` : ''}</span>
-                ${isTurn ? '<span class="text-[10px] font-bold text-amber-300 uppercase">● Active</span>' : ''}
-              </div>
-              <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
-                ${opp.secretTiles.map((t) => renderTileElement(t, { small: true })).join('')}
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-
-      // Render Viewer's Own Secret Rack + Interleaved SORT Clues + COMPARE Clues
-      document.getElementById('my-rack-title').textContent = `${viewerPlayer.name}'s Secret Rack`;
-      const slotsTrack = document.getElementById('my-rack-slots-container');
-      let trackHtml = '';
-
-      for (let i = 0; i < 5; i++) {
-        // Gap before slot i
-        if (viewerPlayer.sortGaps[i] && viewerPlayer.sortGaps[i].length > 0) {
-          trackHtml += `<div class="flex items-center gap-1 px-1.5 py-2 rounded-xl bg-amber-500/10 border border-amber-400/30 self-center">`;
-          for (const st of viewerPlayer.sortGaps[i]) {
-            trackHtml += renderTileElement(st, { small: true });
-          }
-          trackHtml += `</div>`;
-        }
-
-        // Secret Slot i + attached compare clues underneath
-        const slotTile = viewerPlayer.secretTiles[i];
-        const compares = viewerPlayer.compareClues[i] || [];
-        trackHtml += `
-          <div class="flex flex-col items-center gap-1.5">
-            <span class="text-[11px] font-bold text-slate-400">Slot #${i + 1}</span>
-            ${renderTileElement(slotTile, { hiddenNum: true })}
-            ${
-              compares.length > 0
-                ? `<div class="flex flex-col items-center gap-1 mt-1">
-                    ${compares
-                      .map(
-                        (c) => `
-                        <div class="flex flex-col items-center">
-                          ${renderTileElement(c.tile, { small: true, straight: c.sameDots, angled: !c.sameDots })}
-                          <span class="text-[10px] font-extrabold mt-0.5 ${c.sameDots ? 'text-emerald-400' : 'text-rose-400'}">${c.sameDots ? 'YES =' : 'NO ≠'}</span>
-                        </div>`
-                      )
-                      .join('')}
-                  </div>`
-                : ''
+          document.getElementById('btn-resume-saved').onclick = () => {
+            currentMode = saved.mode || 'offline';
+            gameState = saved;
+            myLocalPlayerId = saved.players[0].id;
+            showScreen('screen-game');
+            renderGameBoard();
+            if (currentMode === 'offline') {
+              showPassAndPlayPrivacyScreen();
+            } else if (currentMode === 'ai') {
+              runAITurnIfNeeded();
             }
-          </div>
-        `;
-      }
+          };
 
-      // Trailing gap 5 (after slot #5)
-      if (viewerPlayer.sortGaps[5] && viewerPlayer.sortGaps[5].length > 0) {
-        trackHtml += `<div class="flex items-center gap-1 px-1.5 py-2 rounded-xl bg-amber-500/10 border border-amber-400/30 self-center">`;
-        for (const st of viewerPlayer.sortGaps[5]) {
-          trackHtml += renderTileElement(st, { small: true });
-        }
-        trackHtml += `</div>`;
-      }
-      slotsTrack.innerHTML = trackHtml;
-
-      // Render Clue & Action Log
-      document.getElementById('log-count-badge').textContent = `${gameState.logs.length} events`;
-      document.getElementById('game-log-list').innerHTML = gameState.logs
-        .map((entry) => `<div class="px-2.5 py-1.5 rounded-lg bg-slate-950/70 border border-slate-800/70">${escapeHtml(entry)}</div>`)
-        .join('');
-
-      // Render Private Deduction Notebook (Color-wise rows starting with Red, ascending order)
-      renderPrivateNotebook(viewerPlayer);
-
-      // Winner Modal check
-      const winnerModal = document.getElementById('modal-winner');
-      if (gameState.winnerId) {
-        const winner = gameState.players.find((p) => p.id === gameState.winnerId);
-        document.getElementById('winner-title').textContent = `${winner ? winner.name : 'Player'} GOT FIVE!`;
-        const allRacksHtml = (hostAuthoritative || gameState).players
-          .map(
-            (p) => `
-            <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
-              <span class="font-bold text-sm text-white">${escapeHtml(p.name)}</span>
-              <div class="flex items-center gap-1.5">
-                ${p.secretTiles.map((t) => renderTileElement(t, { small: true })).join('')}
-              </div>
-            </div>`
-          )
-          .join('');
-        document.getElementById('winner-all-racks').innerHTML = allRacksHtml;
-        winnerModal.classList.remove('hidden');
-      } else {
-        winnerModal.classList.add('hidden');
-      }
-    }
-
-    function getActiveNotebookData(viewerPlayer) {
-      if (gameState && gameState.mode === 'online') {
-        return localOnlineNotebook;
-      }
-      if (!viewerPlayer.notebook) {
-        viewerPlayer.notebook = { crossed: [], estimates: ['', '', '', '', ''] };
-      }
-      return viewerPlayer.notebook;
-    }
-
-    function renderPrivateNotebook(viewerPlayer) {
-      const nb = getActiveNotebookData(viewerPlayer);
-      const crossedSet = new Set(nb.crossed);
-      const fullDeck = createFullDeck();
-
-      // Sync estimate inputs
-      document.querySelectorAll('.est-input').forEach((inp) => {
-        const idx = Number(inp.getAttribute('data-est'));
-        if (document.activeElement !== inp) {
-          inp.value = nb.estimates[idx] || '';
+          document.getElementById('btn-discard-saved').onclick = async () => {
+            await clearOfflineGameState();
+            banner.classList.add('hidden');
+            showToast("Saved local match discarded.", "info");
+          };
         }
       });
 
-      const colorStyles = {
-        Red: 'border-red-500/40 bg-red-950/25 text-red-200',
-        Blue: 'border-blue-500/40 bg-blue-950/25 text-blue-200',
-        Green: 'border-emerald-500/40 bg-emerald-950/25 text-emerald-200',
-        Yellow: 'border-amber-500/40 bg-amber-950/25 text-amber-200',
-        Purple: 'border-purple-500/40 bg-purple-950/25 text-purple-200'
-      };
-
-      const nbGrid = document.getElementById('notebook-grid');
-      nbGrid.innerHTML = COLORS.map((color) => {
-        const rowTiles = fullDeck.filter((t) => t.color === color).sort((a, b) => a.number - b.number);
-        return `
-          <div class="p-2.5 rounded-xl border ${colorStyles[color]}">
-            <div class="flex items-center justify-between mb-1.5">
-              <span class="text-xs font-extrabold uppercase tracking-wider">${color}</span>
-              <span class="text-[10px] opacity-80">Low → High</span>
-            </div>
-            <div class="grid grid-cols-6 gap-1.5">
-              ${rowTiles
-                .map((t) => {
-                  const isCrossed = crossedSet.has(t.number);
-                  return `
-                    <button type="button" data-nb-num="${t.number}" class="notebook-cell-btn py-1.5 px-1 rounded-lg border text-center transition flex flex-col items-center justify-center ${
-                      isCrossed
-                        ? 'bg-slate-950/80 border-slate-800 text-slate-600 line-through opacity-45'
-                        : 'bg-slate-900/90 hover:bg-slate-800 border-slate-700 text-white shadow-sm'
-                    }">
-                      <span class="font-extrabold text-sm leading-none">${t.number}</span>
-                      <span class="text-[9px] tracking-tighter mt-0.5 opacity-80">${renderDots(t.dots)}</span>
-                    </button>`;
-                })
-                .join('')}
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      nbGrid.querySelectorAll('[data-nb-num]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const num = Number(btn.getAttribute('data-nb-num'));
-          const idx = nb.crossed.indexOf(num);
-          if (idx >= 0) {
-            nb.crossed.splice(idx, 1);
-          } else {
-            nb.crossed.push(num);
-          }
-          if (gameState.mode !== 'online') saveLocalMatch(gameState);
-          renderPrivateNotebook(viewerPlayer);
-        });
-      });
-    }
-
-    function handleGuessModalResponse(res) {
-      const feedbackBox = document.getElementById('guess-feedback-box');
-      if (!res) return;
-      if (!res.ok) {
-        feedbackBox.textContent = res.message || 'Invalid guess.';
-        feedbackBox.classList.remove('hidden');
-        return;
-      }
-      if (res.won) {
-        document.getElementById('modal-guess').classList.add('hidden');
-        feedbackBox.classList.add('hidden');
-      } else {
-        feedbackBox.textContent = 'Wrong guess! Try again.';
-        feedbackBox.classList.remove('hidden');
-        showToast('Wrong guess! Try again.', 'error');
-      }
-    }
-
-    // =========================================================================
-    // 9. EVENT LISTENERS & INITIALIZATION
-    // =========================================================================
-    function initEventListeners() {
-      // Main Menu Mode Selectors
+      // Main Menu Mode Buttons
       document.getElementById('mode-online-btn').addEventListener('click', () => {
-        updateNetworkIndicator();
         document.getElementById('online-lobby-actions').classList.remove('hidden');
         document.getElementById('online-waiting-room').classList.add('hidden');
         showScreen('screen-setup-online');
@@ -1944,31 +1961,22 @@
       });
 
       document.getElementById('mode-offline-btn').addEventListener('click', () => {
-        renderOfflineNameInputs(2);
         showScreen('screen-setup-offline');
       });
 
-      document.querySelectorAll('.back-to-menu').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          cleanupP2PRoom();
-          showScreen('screen-menu');
-        });
-      });
-
-      document.getElementById('nav-home-btn').addEventListener('click', () => {
-        if (!gameState || gameState.winnerId) {
-          cleanupP2PRoom();
-          showScreen('screen-menu');
-        }
-      });
-
-      document.getElementById('btn-exit-game').addEventListener('click', () => {
-        clearTimeout(aiTurnTimer);
+      // Back to Menu / Header Home / Exit Buttons
+      const returnToMenu = () => {
         cleanupP2PRoom();
-        gameState = null;
-        checkResumeBanner();
+        document.getElementById('modal-winner').classList.add('hidden');
+        document.getElementById('modal-guess').classList.add('hidden');
+        document.getElementById('screen-privacy').classList.add('hidden');
         showScreen('screen-menu');
-      });
+      };
+
+      document.querySelectorAll('.back-to-menu').forEach(btn => btn.addEventListener('click', returnToMenu));
+      document.getElementById('nav-home-btn').addEventListener('click', returnToMenu);
+      document.getElementById('btn-exit-game').addEventListener('click', returnToMenu);
+      document.getElementById('btn-winner-home').addEventListener('click', returnToMenu);
 
       // Rules Modal
       document.getElementById('btn-open-rules').addEventListener('click', () => {
@@ -1978,7 +1986,7 @@
         document.getElementById('modal-rules').classList.add('hidden');
       });
 
-      // Online Room Creation & Joining
+      // Online Setup Handlers
       document.getElementById('btn-create-room').addEventListener('click', () => {
         const name = document.getElementById('online-player-name').value.trim() || 'Host';
         const code = generateRoomCode();
@@ -1989,21 +1997,20 @@
         const name = document.getElementById('online-player-name').value.trim() || 'Player';
         const code = document.getElementById('join-room-code-input').value.trim().toUpperCase();
         if (code.length < 4) {
-          showToast('Please enter a valid room code.', 'error');
+          showToast("Please enter a valid 5-character room code.", "error");
           return;
         }
         connectToTrysteroRoom(code, name, false);
       });
 
       document.getElementById('btn-copy-code').addEventListener('click', () => {
-        const code = document.getElementById('display-room-code').textContent;
         const temp = document.createElement('textarea');
-        temp.value = code;
+        temp.value = p2pRoomCode;
         document.body.appendChild(temp);
         temp.select();
         document.execCommand('copy');
-        temp.remove();
-        showToast(`Room code ${code} copied!`, 'success');
+        document.body.removeChild(temp);
+        showToast(`Room code ${p2pRoomCode} copied!`, "success");
       });
 
       document.getElementById('btn-leave-room').addEventListener('click', () => {
@@ -2014,21 +2021,15 @@
 
       document.getElementById('btn-start-online-game').addEventListener('click', () => {
         if (!p2pIsHost || p2pLobbyPlayers.length < 2) return;
-        hostAuthoritative = buildNewMatchState('online', p2pLobbyPlayers, 'medium', p2pRoomCode);
-        gameState = createRedactedViewForPlayer(hostAuthoritative, myLocalPlayerId);
-        broadcastHostGameState();
-        showScreen('screen-game');
-        renderGameScreen();
+        hostAuthoritative = createInitialMatchState('online', p2pLobbyPlayers);
+        broadcastAuthoritativeOnlineState();
       });
 
-      // AI Setup Controls
-      let selectedAICount = 1;
-      let selectedAIDiff = 'medium';
-
-      document.querySelectorAll('.ai-count-btn').forEach((btn) => {
+      // AI Setup Handlers
+      document.querySelectorAll('.ai-count-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          selectedAICount = Number(btn.getAttribute('data-count'));
-          document.querySelectorAll('.ai-count-btn').forEach((b) => {
+          selectedAiCount = parseInt(btn.getAttribute('data-count'), 10);
+          document.querySelectorAll('.ai-count-btn').forEach(b => {
             const active = b === btn;
             b.className = `ai-count-btn py-3 rounded-xl border-2 font-bold ${
               active ? 'border-emerald-400 bg-emerald-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
@@ -2038,16 +2039,16 @@
       });
 
       const diffDescriptions = {
-        easy: 'Easy: Makes basic deductions from visible tiles and SORT clues.',
+        easy: 'Easy: Makes basic deductions and takes extra turns before guessing.',
         medium: 'Medium: Tracks visible tiles, SORT bounds, and COMPARE dot counts methodically.',
-        hard: 'Hard: Uses full constraint propagation across adjacent slots and dot parity.'
+        hard: 'Hard: Performs full constraint propagation across all 5 slots to deduce tiles rapidly.'
       };
 
-      document.querySelectorAll('.ai-diff-btn').forEach((btn) => {
+      document.querySelectorAll('.ai-diff-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          selectedAIDiff = btn.getAttribute('data-diff');
-          document.getElementById('ai-diff-desc').textContent = diffDescriptions[selectedAIDiff];
-          document.querySelectorAll('.ai-diff-btn').forEach((b) => {
+          selectedAiDiff = btn.getAttribute('data-diff');
+          document.getElementById('ai-diff-desc').textContent = diffDescriptions[selectedAiDiff];
+          document.querySelectorAll('.ai-diff-btn').forEach(b => {
             const active = b === btn;
             b.className = `ai-diff-btn py-3 rounded-xl border-2 font-bold ${
               active ? 'border-emerald-400 bg-emerald-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
@@ -2058,159 +2059,138 @@
 
       document.getElementById('btn-start-ai-game').addEventListener('click', () => {
         const humanName = document.getElementById('ai-human-name').value.trim() || 'You';
-        const botNames = ['Bot Ada', 'Bot Turing', 'Bot Pascal'];
-        const players = [{ id: 'p0', name: humanName, isAI: false }];
-        for (let i = 0; i < selectedAICount; i++) {
-          players.push({ id: `ai${i + 1}`, name: botNames[i], isAI: true, difficulty: selectedAIDiff });
+        const specs = [{ id: 'p0', name: humanName, isAI: false }];
+        const botNames = ['Bot Ada', 'Bot Leo', 'Bot Zara'];
+        for (let i = 0; i < selectedAiCount; i++) {
+          specs.push({ id: `ai-${i + 1}`, name: botNames[i], isAI: true, aiDiff: selectedAiDiff });
         }
+        currentMode = 'ai';
         myLocalPlayerId = 'p0';
-        gameState = buildNewMatchState('ai', players, selectedAIDiff);
-        saveLocalMatch(gameState);
+        selectedClueTileId = null;
+        pendingCompareMode = false;
+        gameState = createInitialMatchState('ai', specs, selectedAiDiff);
         showScreen('screen-game');
-        renderGameScreen();
-        scheduleAITurnIfNeeded();
+        renderGameBoard();
       });
 
-      // Offline Pass & Play Setup Controls
-      let selectedOfflineCount = 2;
-
-      function renderOfflineNameInputs(count) {
-        selectedOfflineCount = count;
-        const container = document.getElementById('offline-player-names');
-        container.innerHTML = Array.from({ length: count }, (_, i) => `
-          <div>
-            <label class="block text-xs font-bold text-slate-400 mb-1">Player ${i + 1} Name</label>
-            <input type="text" maxlength="16" value="Player ${i + 1}" class="offline-name-input w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-400" />
-          </div>
-        `).join('');
-      }
-
-      document.querySelectorAll('.offline-count-btn').forEach((btn) => {
+      // Offline Pass & Play Setup Handlers
+      document.querySelectorAll('.offline-count-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          const cnt = Number(btn.getAttribute('data-count'));
-          document.querySelectorAll('.offline-count-btn').forEach((b) => {
+          selectedOfflineCount = parseInt(btn.getAttribute('data-count'), 10);
+          document.querySelectorAll('.offline-count-btn').forEach(b => {
             const active = b === btn;
             b.className = `offline-count-btn py-3 rounded-xl border-2 font-bold ${
               active ? 'border-amber-400 bg-amber-500/20 text-white' : 'border-slate-700 bg-slate-950 text-slate-300'
             }`;
           });
-          renderOfflineNameInputs(cnt);
+          renderOfflineNameInputs();
         });
       });
 
       document.getElementById('btn-start-offline-game').addEventListener('click', () => {
-        const inputs = [...document.querySelectorAll('.offline-name-input')];
-        const players = inputs.map((inp, idx) => ({
+        const inputs = document.querySelectorAll('.offline-name-input');
+        const specs = Array.from(inputs).map((inp, idx) => ({
           id: `p${idx}`,
           name: inp.value.trim() || `Player ${idx + 1}`,
           isAI: false
         }));
-        myLocalPlayerId = 'p0';
-        gameState = buildNewMatchState('offline', players);
-        saveLocalMatch(gameState);
+        currentMode = 'offline';
+        selectedClueTileId = null;
+        pendingCompareMode = false;
+        gameState = createInitialMatchState('offline', specs);
+        saveOfflineGameState(gameState);
         showScreen('screen-game');
-        renderGameScreen();
+        renderGameBoard();
+        showPassAndPlayPrivacyScreen();
       });
 
-      // Privacy Screen Unlock
       document.getElementById('btn-privacy-ready').addEventListener('click', () => {
-        if (!gameState) return;
-        gameState.passAndPlayLocked = false;
-        saveLocalMatch(gameState);
-        renderGameScreen();
+        document.getElementById('screen-privacy').classList.add('hidden');
+        renderGameBoard();
       });
 
-      // In-Game Board Actions
+      // Gameplay Draw & Clue Buttons
       document.getElementById('btn-draw-tile').addEventListener('click', () => {
-        if (!gameState) return;
-        const viewer = getActiveViewerPlayer();
-        if (gameState.mode === 'online' && !p2pIsHost) {
-          p2pActions.sendCmd({ type: 'DRAW' });
-        } else {
-          performDrawAction(viewer.id);
+        if (!isMyTurn() || gameState.turnStep !== 'draw') return;
+        if (currentMode === 'online') {
+          dispatchOnlinePlayerAction({ type: 'draw' });
+          return;
+        }
+        if (performDrawAction(gameState)) {
+          if (currentMode === 'offline') saveOfflineGameState(gameState);
+          renderGameBoard();
         }
       });
 
       document.getElementById('btn-action-sort').addEventListener('click', () => {
-        if (!gameState || !selectedClueTileId) return;
-        const viewer = getActiveViewerPlayer();
-        const targetOppId = document.getElementById('select-target-opponent').value;
-        if (gameState.mode === 'online' && !p2pIsHost) {
-          p2pActions.sendCmd({ type: 'SORT', targetOpponentId: targetOppId, clueTileId: selectedClueTileId });
-          selectedClueTileId = null;
-        } else {
-          performSortAction(viewer.id, targetOppId, selectedClueTileId);
-        }
+        executePlayerClue('sort');
       });
 
       document.getElementById('btn-action-compare').addEventListener('click', () => {
         if (!selectedClueTileId) return;
-        compareModeActive = !compareModeActive;
-        renderGameScreen();
+        pendingCompareMode = !pendingCompareMode;
+        renderGameBoard();
       });
 
       // Notebook Controls
       document.getElementById('btn-notebook-auto-sync').addEventListener('click', () => {
         if (!gameState) return;
-        const viewer = getActiveViewerPlayer();
-        const nb = getActiveNotebookData(viewer);
-        const visibleNums = new Set(nb.crossed);
+        const viewer = getViewingPlayer();
+        const nb = viewer.notebook || createEmptyNotebook();
+        const visible = new Set();
 
-        gameState.faceUpPool.forEach((t) => visibleNums.add(t.number));
-        gameState.players.forEach((p) => {
+        gameState.faceUpPool.forEach(t => visible.add(t.number));
+        gameState.players.forEach(p => {
           if (p.id !== viewer.id) {
-            p.secretTiles.forEach((t) => visibleNums.add(t.number));
+            p.secretTiles.forEach(t => { if (t.number) visible.add(t.number); });
           }
-          p.sortGaps.forEach((g) => g.forEach((t) => visibleNums.add(t.number)));
-          p.compareClues.forEach((cList) => cList.forEach((c) => visibleNums.add(c.tile.number)));
+          p.sortClues.forEach(bucket => bucket.forEach(t => visible.add(t.number)));
+          p.compareClues.forEach(bucket => bucket.forEach(c => visible.add(c.tile.number)));
         });
 
-        nb.crossed = [...visibleNums];
-        if (gameState.mode !== 'online') saveLocalMatch(gameState);
-        renderPrivateNotebook(viewer);
-        showToast('Marked all visible board tiles in your notebook!', 'success');
+        visible.forEach(num => {
+          if (!nb.crossed.includes(num)) nb.crossed.push(num);
+        });
+        if (currentMode === 'online') localOnlineNotebook = nb;
+        if (currentMode === 'offline') saveOfflineGameState(gameState);
+        renderNotebook(viewer);
+        showToast(`Marked ${visible.size} visible tiles in your notebook.`, "info");
       });
 
-      document.querySelectorAll('.est-input').forEach((inp) => {
+      document.querySelectorAll('.est-input').forEach(inp => {
         inp.addEventListener('input', () => {
           if (!gameState) return;
-          const viewer = getActiveViewerPlayer();
-          const nb = getActiveNotebookData(viewer);
-          const idx = Number(inp.getAttribute('data-est'));
-          nb.estimates[idx] = inp.value;
-          if (gameState.mode !== 'online') saveLocalMatch(gameState);
+          const viewer = getViewingPlayer();
+          const idx = parseInt(inp.getAttribute('data-est'), 10);
+          viewer.notebook.estimates[idx] = inp.value;
+          if (currentMode === 'online') localOnlineNotebook = viewer.notebook;
+          if (currentMode === 'offline') saveOfflineGameState(gameState);
         });
       });
 
-      document.getElementById('btn-copy-est-to-guess').addEventListener('click', () => {
-        openGuessModal(true);
-      });
-
-      // Final Guess Modal
-      function openGuessModal(prefillFromNotebook = false) {
-        if (!gameState) return;
-        const viewer = getActiveViewerPlayer();
-        const nb = getActiveNotebookData(viewer);
+      // GOT FIVE! Final Guess Modal Controls
+      const openGuessModal = () => {
+        if (!gameState || gameState.status !== 'playing') return;
+        const viewer = getViewingPlayer();
         document.getElementById('guess-feedback-box').classList.add('hidden');
 
-        document.getElementById('guess-slot-color-hints').innerHTML = viewer.secretTiles
-          .map(
-            (t, idx) => `
-            <div class="py-1.5 rounded-lg tile-${t.color} text-white shadow">
-              #${idx + 1} ${t.color}
-            </div>`
-          )
-          .join('');
+        // Show color hints of viewer's 5 secret tiles
+        document.getElementById('guess-slot-color-hints').innerHTML = viewer.secretTiles.map((t, idx) => `
+          <div class="py-1.5 px-1 rounded-lg tile-${t.color} text-white">
+            #${idx + 1} ${t.color}
+          </div>
+        `).join('');
 
-        const inputs = [...document.querySelectorAll('.final-guess-input')];
-        inputs.forEach((inp, idx) => {
-          inp.value = prefillFromNotebook && nb.estimates[idx] ? nb.estimates[idx] : '';
+        const guessInputs = document.querySelectorAll('.final-guess-input');
+        guessInputs.forEach((inp, idx) => {
+          inp.value = (viewer.notebook && viewer.notebook.estimates[idx]) || '';
         });
 
         document.getElementById('modal-guess').classList.remove('hidden');
-      }
+      };
 
-      document.getElementById('btn-open-guess-modal').addEventListener('click', () => openGuessModal(false));
+      document.getElementById('btn-open-guess-modal').addEventListener('click', openGuessModal);
+      document.getElementById('btn-copy-est-to-guess').addEventListener('click', openGuessModal);
       document.getElementById('btn-close-guess').addEventListener('click', () => {
         document.getElementById('modal-guess').classList.add('hidden');
       });
@@ -2219,63 +2199,76 @@
       });
 
       document.getElementById('btn-submit-guess').addEventListener('click', () => {
-        if (!gameState) return;
-        const viewer = getActiveViewerPlayer();
-        const nums = [...document.querySelectorAll('.final-guess-input')].map((inp) => parseInt(inp.value, 10));
+        const inputs = Array.from(document.querySelectorAll('.final-guess-input'));
+        const nums = inputs.map(i => parseInt(i.value, 10));
+        const fb = document.getElementById('guess-feedback-box');
 
-        if (gameState.mode === 'online' && !p2pIsHost) {
-          p2pActions.sendCmd({ type: 'GUESS', numbers: nums });
+        if (nums.some(n => isNaN(n) || n < 1 || n > 60)) {
+          fb.textContent = "Please enter 5 valid numbers between 1 and 60.";
+          fb.classList.remove('hidden');
+          return;
+        }
+        for (let i = 1; i < 5; i++) {
+          if (nums[i] <= nums[i - 1]) {
+            fb.textContent = "Numbers must be in strictly ascending order (lowest to highest).";
+            fb.classList.remove('hidden');
+            return;
+          }
+        }
+
+        const viewer = getViewingPlayer();
+        if (currentMode === 'online') {
+          dispatchOnlinePlayerAction({ type: 'guess', numbers: nums });
+          return;
+        }
+
+        const won = evaluateFinalGuess(gameState, viewer.id, nums);
+        if (won) {
+          document.getElementById('modal-guess').classList.add('hidden');
+          renderGameBoard();
         } else {
-          const res = evaluateFinalGuess(viewer.id, nums);
-          handleGuessModalResponse(res);
+          fb.textContent = "Wrong guess! Try again.";
+          fb.classList.remove('hidden');
+          if (currentMode === 'offline') saveOfflineGameState(gameState);
+          renderGameBoard();
         }
       });
 
-      document.getElementById('btn-winner-home').addEventListener('click', () => {
-        document.getElementById('modal-winner').classList.add('hidden');
-        cleanupP2PRoom();
-        gameState = null;
-        checkResumeBanner();
-        showScreen('screen-menu');
-      });
-
-      // Resume Saved Offline Game
-      document.getElementById('btn-resume-saved').addEventListener('click', async () => {
-        const saved = await loadLocalMatch();
-        if (!saved) return;
-        gameState = saved;
-        myLocalPlayerId = saved.mode === 'offline' ? saved.players[saved.currentTurnIdx].id : 'p0';
-        showScreen('screen-game');
-        renderGameScreen();
-        scheduleAITurnIfNeeded();
-      });
-
-      document.getElementById('btn-discard-saved').addEventListener('click', async () => {
-        await clearLocalMatch();
-        document.getElementById('resume-banner').classList.add('hidden');
-        showToast('Saved match discarded.', 'info');
-      });
-
-      window.addEventListener('online', updateNetworkIndicator);
-      window.addEventListener('offline', updateNetworkIndicator);
-    }
-
-    async function checkResumeBanner() {
-      const saved = await loadLocalMatch();
-      const banner = document.getElementById('resume-banner');
-      if (saved && !saved.winnerId) {
-        const modeLabel = saved.mode === 'ai' ? 'Solo vs AI' : 'Offline Pass & Play';
-        document.getElementById('resume-details').textContent = `${modeLabel} • ${saved.players.length} Players`;
-        banner.classList.remove('hidden');
-      } else {
-        banner.classList.add('hidden');
+      // Register Service Worker for Offline PWA Support (only on http/https)
+      if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+        const swCode = `
+          const CACHE_NAME = 'got-five-v4';
+          self.addEventListener('install', e => {
+            self.skipWaiting();
+            e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(['./'])));
+          });
+          self.addEventListener('activate', e => {
+            e.waitUntil(
+              caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+            );
+          });
+          self.addEventListener('fetch', e => {
+            if (e.request.method !== 'GET') return;
+            e.respondWith(
+              fetch(e.request).then(res => {
+                const copy = res.clone();
+                caches.open(CACHE_NAME).then(c => c.put(e.request, copy));
+                return res;
+              }).catch(() => caches.match(e.request))
+            );
+          });
+        `;
+        const blob = new Blob([swCode], { type: 'application/javascript' });
+        const swUrl = URL.createObjectURL(blob);
+        navigator.serviceWorker.register(swUrl).catch(() => {});
       }
     }
 
-    // Boot Application
-    initEventListeners();
-    updateNetworkIndicator();
-    checkResumeBanner();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initApp);
+    } else {
+      initApp();
+    }
   </script>
 </body>
 </html>
