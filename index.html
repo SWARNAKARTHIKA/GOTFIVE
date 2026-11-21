@@ -768,13 +768,23 @@
     let hostAuthoritative = null; // Holds full unredacted state ONLY on host's memory
     let localOnlineNotebook = { crossed: [], estimates: ['', '', '', '', ''] };
 
-    // Build complete 60-tile deck (1..60, 12 per color, 1-3 dots)
+    // Build complete 60-tile deck (1..60, 12 per color, balanced 1-3 dots jumbled per color)
     function createFullDeck() {
+      // Deterministic jumbled 12-tile dot cycles (four 1s, four 2s, four 3s) per color
+      const DOT_PATTERNS = [
+        [1, 3, 2, 1, 2, 3, 3, 1, 2, 2, 3, 1], // Red
+        [2, 1, 3, 2, 3, 1, 1, 2, 3, 3, 1, 2], // Blue
+        [3, 2, 1, 3, 1, 2, 2, 3, 1, 1, 2, 3], // Green
+        [1, 2, 3, 1, 3, 2, 2, 1, 3, 3, 2, 1], // Yellow
+        [3, 1, 2, 3, 2, 1, 1, 3, 2, 2, 1, 3]  // Purple
+      ];
+
       const deck = [];
       for (let num = 1; num <= 60; num++) {
-        const color = COLORS[(num - 1) % 5];
-        // Deterministic dot distribution matching physical GOT FIVE! balance
-        const dots = ((num * 7 + Math.floor((num - 1) / 5)) % 3) + 1;
+        const colorIdx = (num - 1) % 5;
+        const posInColor = Math.floor((num - 1) / 5); // 0..11
+        const color = COLORS[colorIdx];
+        const dots = DOT_PATTERNS[colorIdx][posInColor];
         deck.push({ id: `t-${num}`, number: num, color, dots });
       }
       return deck;
